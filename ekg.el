@@ -764,7 +764,8 @@ Returns the ID of the note."
         (args))
     (pcase command
       ("transclude-note" (setq args (list (ekg-select-note))))
-      ("transclude-file" (setq args (list (read-file-name "File: ")))))
+      ("transclude-file" (setq args (list (read-file-name "File: "))))
+      ("transclude-website" (setq args (list (read-from-minibuffer "Url: " )))))
     (insert (format "%%%S" (cons (intern command) args)))))
 
 (defun ekg-note-snippet (note &optional max-length)
