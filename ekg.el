@@ -1049,7 +1049,7 @@ If ID is given, force the triple subject to be that value."
              ekg-notes-display-images)
         (org-redisplay-inline-images))
     (set-buffer-modified-p nil)
-    (pop-to-buffer buf)))
+    (switch-to-buffer buf)))
 
 ;;;###autoload
 (defun ekg-capture-url (&optional url title)
@@ -1131,7 +1131,7 @@ file. If not, an error will be thrown."
              ekg-notes-display-images)
         (org-redisplay-inline-images)))
     (set-buffer-modified-p nil)
-    (pop-to-buffer buf)))
+    (switch-to-buffer buf)))
 
 (defun ekg--save-note-in-buffer ()
   "Save the current note.
@@ -1651,7 +1651,7 @@ are created with additional tags TAGS."
   (let ((buf (get-buffer-create (format "*EKG Notes: %s*" name))))
     (set-buffer buf)
     (ekg--show-notes name notes-func tags)
-    (pop-to-buffer buf)))
+    (switch-to-buffer buf)))
 
 (defun ekg-sort-by-creation-time (a b)
   "Used to pass to `sort', which will supply A and B."
