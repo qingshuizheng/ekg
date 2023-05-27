@@ -1518,7 +1518,7 @@ tags."
 (defun ekg-notes-open ()
   "Open the current note."
   (interactive nil ekg-notes-mode)
-  (ekg-edit (ekg-current-note-or-error)))
+  (ekg-edit (ekg-get-note-with-id (ekg-note-id (ekg-current-note-or-error)))))
 
 (defun ekg-notes-kill ()
   "Kill (hide) the current note from the view.
