@@ -690,9 +690,7 @@ nil for all words."
     (mapc #'funcall ekg-format-funcs)
     (font-lock-ensure)
     (put-text-property (point-min) (point-max) 'ekg-note-id (ekg-note-id note))
-    (concat (string-trim-right
-             (ekg-truncate-at (buffer-string)
-                              (or numwords ekg-note-inline-max-words))) "\n")))
+    (concat (ekg-truncate-at (buffer-string) (or numwords ekg-note-inline-max-words)) "\n")))
 
 (defun ekg-display-note-tagged (note)
   "Return text of the tags of NOTE."
