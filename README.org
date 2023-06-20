@@ -1,5 +1,10 @@
 #+TITLE: ekg
 
+* DON'T TRACK: every commit is a breaking change.
+This is a forked repo. If you like it, go checkout the great original repo: [[https://github.com/ahyatt/ekg][ahyatt/ekg]]. The main branch has relative stable release, while the develop need more testing before releasing.
+
+Please DON't track changes here, since I rebase the repo now and then, and it breaks things.
+
 * Quick intro
 :PROPERTIES:
 :ORG-IMAGE-ACTUAL-WIDTH: 300
