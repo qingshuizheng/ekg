@@ -1616,14 +1616,12 @@ NAME is displayed at the top of the buffer."
 (defun ekg-notes-next ()
   "Move to the next note, if possible."
   (interactive nil ekg-notes-mode)
-  (if-let (next (ewoc-next ekg-notes-ewoc (ewoc-locate ekg-notes-ewoc)))
-      (goto-char (ewoc-location next))))
+  (ewoc-goto-next ekg-notes-ewoc 1))
 
 (defun ekg-notes-previous ()
   "Move to the previous note, if possible."
   (interactive nil ekg-notes-mode)
-  (if-let (prev (ewoc-prev ekg-notes-ewoc (ewoc-locate ekg-notes-ewoc)))
-      (goto-char (ewoc-location prev))))
+  (ewoc-goto-prev ekg-notes-ewoc 1))
 
 (defun ekg-notes-any-note-tags ()
   "Show notes with any of the tags in the current note."
