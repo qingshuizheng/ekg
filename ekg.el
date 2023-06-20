@@ -1025,7 +1025,7 @@ delete from the end of the metadata, we need to fix it back up."
 If ID is given, force the triple subject to be that value."
   (interactive)
   (let* ((id (or id (ekg--generate-id)))
-         (buf (get-buffer-create (format "*EKG Capture (note %s)*" id)))
+         (buf (get-buffer-create (format "*EKG Capture: %s*" id)))
          (text (or text ""))
          (auto-tags (mapcan (lambda (f) (funcall f)) ekg-capture-auto-tag-funcs))
          (tags (seq-uniq (append tags auto-tags))))
