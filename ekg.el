@@ -1667,7 +1667,7 @@ are created with additional tags TAGS."
   "Show notes with any of TAGS."
   (interactive (list (completing-read-multiple "Tags: " (ekg-tags))))
   (ekg-setup-notes-buffer
-     (format "tags (any): %s" (ekg-tags-display tags))
+     (format "TAGS (any): %s" (ekg-tags-display tags))
      (lambda () (sort
                  (seq-uniq (mapcan (lambda (tag) (ekg-get-notes-with-tag tag)) tags))
                  #'ekg-sort-by-creation-time))
@@ -1678,7 +1678,7 @@ are created with additional tags TAGS."
   "Show notes that contain all TAGS."
   (interactive (list (completing-read-multiple "Tags: " (ekg-tags))))
   (ekg-setup-notes-buffer
-   (format "tags (all): %s" (ekg-tags-display tags))
+   (format "TAGS (all): %s" (ekg-tags-display tags))
    (lambda () (sort (ekg-get-notes-with-tags tags)
                     #'ekg-sort-by-creation-time))
    tags))
@@ -1688,7 +1688,7 @@ are created with additional tags TAGS."
   "Show notes that contain TAG."
   (interactive (list (completing-read "Tag: " (ekg-tags))))
   (ekg-setup-notes-buffer
-   (format "tag: %s" (ekg-tags-display (list tag)))
+   (format "TAG: %s" (ekg-tags-display (list tag)))
    (lambda () (sort (ekg-get-notes-with-tag tag) #'ekg-sort-by-creation-time))
    (list tag)))
 
