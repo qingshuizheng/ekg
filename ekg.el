@@ -295,7 +295,8 @@ callers have already called this function")
   (interactive)
   (when ekg-db
     (triples-close ekg-db)
-    (setq ekg-db nil)))
+    (setq ekg-db nil
+          ekg-document-titles nil)))
 
 (defun ekg-add-schema ()
   "Add schema necessary for EKG to function."
@@ -399,6 +400,17 @@ the text and may be after trailing whitespace."
       (setf (ekg-note-modified-time note) modified-time))
     (mapc (lambda (tag) (triples-set-type ekg-db tag 'tag)) (ekg-note-tags note))
     (apply #'triples-set-types ekg-db (ekg-note-id note) (ekg-note-properties note))
+    ;; update ekg-document-titles
+    (when ekg-document-titles
+      (let* ((id (ekg-note-id note))
+             (old-title (alist-get id ekg-document-titles nil nil #'equal))
+             (new-title (car (plist-get (ekg-note-properties note) :titled/title))))
+        (cond ((and old-title new-title)
+               (setf (alist-get id ekg-document-titles nil nil #'equal) new-title))
+              ((and old-title (null new-title))
+               (setq ekg-document-titles (assoc-delete-all id ekg-document-titles)))
+              (t
+               (push (cons id new-title) ekg-document-titles)))))
     (run-hook-with-args 'ekg-note-save-hook note))
   (triples-backups-maybe-backup ekg-db (ekg-db-file))
   (set-buffer-modified-p nil))
@@ -506,7 +518,10 @@ then the note is really deleted."
                                     (ekg-mark-trashed tag)))
                     (ekg-note-tags note)))
       (ekg-save-note note)))
-  (triples-backups-maybe-backup ekg-db (ekg-db-file)))
+  (triples-backups-maybe-backup ekg-db (ekg-db-file))
+  (when ekg-document-titles
+    (setq ekg-document-titles
+          (assoc-delete-all (ekg-note-id note) ekg-document-titles #'equal))))
 
 (defun ekg-content-tag-p (tag)
   "Return non-nil if TAG represents user content.
@@ -1777,14 +1792,19 @@ notes to show. But with a prefix ARG, ask the user."
               finally return selected))
    nil))
 
+(defvar ekg-document-titles nil)
+
 (defun ekg-document-titles ()
   "Return an alist of all titles.
 The key is the subject and the value is the title."
-  (ekg-connect)
-  (mapcan (lambda (sub)
-            (mapcar (lambda (title) (cons sub title)) (plist-get (triples-get-type ekg-db sub 'titled) :title)))
-          (seq-filter #'ekg-active-id-p
-                      (triples-subjects-of-type ekg-db 'titled))))
+  (if ekg-document-titles
+      ekg-document-titles
+    (ekg-connect)
+    (setq ekg-document-titles
+          (mapcan (lambda (sub)
+                    (mapcar (lambda (title) (cons sub title)) (plist-get (triples-get-type ekg-db sub 'titled) :title)))
+                  (seq-filter #'ekg-active-id-p
+                              (triples-subjects-of-type ekg-db 'titled))))))
 
 (defun ekg-browse-url (title)
   "Browse the url corresponding to TITLE.
