@@ -870,6 +870,8 @@ This is needed to identify references to refresh when the subject is changed." )
     (define-key map "c" #'ekg-notes-create)
     (define-key map "d" #'ekg-notes-delete)
     (define-key map "g" #'ekg-notes-refresh)
+    (define-key map "u" #'ekg-notes-update-info-at-point)
+    (define-key map "w" #'ekg-notes-copy-info-at-point)
     (define-key map "n" #'ekg-notes-next)
     (define-key map "o" #'ekg-notes-open)
     (define-key map "b" #'ekg-notes-browse)
@@ -1665,6 +1667,116 @@ NAME is displayed at the top of the buffer."
    ekg-notes-name
    ekg-notes-fetch-notes-function
    ekg-notes-tags))
+
+(defun ekg-notes-copy-info-at-point (arg)
+  "Update info at point.
+Info could be resource, tags, title, text. If ARG, choose from
+completion regardless of position."
+  (interactive "P")
+  (let* ((note (ekg-current-note-or-error))
+         (pkey (if arg
+                   (intern-soft
+                    (car (last (read-multiple-choice
+                                "What to copy: "
+                                '((?i "id" ":id")
+                                  (?r "resource" ":id")
+                                  (?t "tags" ":tags")
+                                  (?T "Title" ":titled/title")
+                                  (?x "text" ":text"))))))
+                 (car (get-text-property (point) 'ekg-note-props)))))
+    (kill-new
+     (pcase pkey
+       (:id (format "%s" (ekg-note-id note)))
+       (:tags (mapconcat #'identity (ekg-note-tags note) ", "))
+       (:titled/title (mapconcat #'identity (plist-get (ekg-note-properties note) :titled/title) "\n"))
+       (:text (ekg-note-text note))))))
+
+(defun ekg-notes-update-info-at-point (arg)
+  "Update info at point.
+Info could be resource, tags, title, text. If ARG, choose from completion.
+Note: this method does not change value of \\=`time-tracked/modified-time'."
+  (interactive "P")
+  (let* ((note (ekg-current-note-or-error))
+         (orig-id (ekg-note-id note))
+         (orig-tags (ekg-note-tags note))
+         (orig-title (mapconcat #'identity (plist-get (ekg-note-properties note) :titled/title) "\n"))
+         (orig-text (ekg-note-text note))
+         (pkey (if arg
+                   (intern-soft
+                    (car (last (read-multiple-choice
+                                "What to update: "
+                                '((?i "id" ":id")
+                                  (?r "resource" ":id") ; FIXME: not working
+                                  (?t "tags" ":tags")
+                                  (?T "Title" ":titled/title") ; FIXME: not working
+                                  (?x "text" ":text"))))))
+                 (car (get-text-property (point) 'ekg-note-props))))
+         ;; FIXME
+         (rel-pos (1+
+                   ;; NOTE: INITIAL-INPUT/INITIAL-CONTENT
+                   ;; completing-read => zero-indexed
+                   ;; completing-read-multiple & read-from-minibuffer => one-indexed
+                   ;; (completing-read "input: " nil nil nil '("abc" . 0)) ; =>|abc
+                   ;; (completing-read "input: " nil nil nil '("abc" . 1)) ; =>a|bc
+                   ;; (completing-read "input: " nil nil nil '("abc" . 2)) ; =>ab|c
+                   ;; (completing-read-multiple "input: " nil nil nil '("abc" . 0)) ; =>|abc
+                   ;; (completing-read-multiple "input: " nil nil nil '("abc" . 1)) ; =>|abc
+                   ;; (completing-read-multiple "input: " nil nil nil '("abc" . 2)) ; =>a|bc
+                   ;; (read-from-minibuffer "input: " '("abc" . 0)) ; =>|abc
+                   ;; (read-from-minibuffer "input: " '("abc" . 1)) ; =>|abc
+                   ;; (read-from-minibuffer "input: " '("abc" . 2)) ; =>a|bc
+                   (if (and (bolp)
+                            (or (= (point) (save-excursion (prop-match-end (text-property-search-backward 'ekg-note-props)))) ; FIXME
+                                (null (text-property-search-backward 'ekg-note-props)))) ; 1st node BEG
+                       0 (- (point) (previous-single-property-change (point) 'ekg-note-props))))))
+    (pcase pkey
+      (:tags
+       (let* ((new-tags (delete-dups
+                         (completing-read-multiple
+                          "Update Tags: \n" (ekg-tags) nil nil
+                          `(,(mapconcat #'identity orig-tags ",") . ,rel-pos)))))
+         (setf (ekg-note-tags note) (mapcar #'ekg--normalize-tag new-tags))
+         (ekg-save-note note)
+         (ekg-notes-ewoc-update note)))
+      (:titled/title
+       (let* ((new-title (mapcar
+                          #'string-trim
+                          (split-string
+                           (read-from-minibuffer
+                            "Update Title(s) (If you need newline for extra titles, press C-q C-j): \n"
+                            `(,orig-title . ,rel-pos))
+                           "\n")))) ; TODO: "\n" doesn't work
+         ;; FIXME
+         (setf (ekg-note-properties note)
+               (if (seq-every-p #'string-empty-p new-title)
+                   nil
+                 `(:titled/title ,new-title)))
+         ;; (setf (ekg-note-properties note) `(:titled/title ,new-title))
+         (ekg-save-note note)
+         (ekg-notes-ewoc-update note)))
+      (:text
+       (let* ((new-text (read-from-minibuffer
+                         "Edit Text (If you need a newline, press C-q C-j): \n"
+                         `(,orig-text . ,rel-pos))))
+         (setf (ekg-note-text note) new-text)
+         (ekg-save-note note)
+         (ekg-notes-ewoc-update note)))
+      (:id
+       (let* ((new-id-str (read-from-minibuffer
+                           "Edit New Resource: \n"
+                           `(,(format "%s" orig-id) . ,(- rel-pos (if (eolp) 2 1))))) ; TODO: position
+              (new-id (if (string-match-p "^[0-9]+$" new-id-str)
+                          (string-to-number new-id-str)
+                        new-id-str)))
+         (setf (ekg-note-id note) new-id)
+         (ekg-save-note note)
+         ;; fixme: it does not offer delete old note.
+         (cl-loop for b being the buffers do
+                  (ekg-notes-ewoc-update note)
+                  (with-current-buffer b
+                    (when (eq major-mode 'ekg-notes-mode)
+                      ;; TODO 2023-06-21: `ewoc-invalidate'
+                      (ekg-notes-refresh)))))))))
 
 (defun ekg-notes-create ()
   "Add a note that by default has all the tags in the buffer."
