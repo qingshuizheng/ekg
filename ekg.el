@@ -851,9 +851,10 @@ This is needed to identify references to refresh when the subject is changed." )
   (setq truncate-lines t)
   (visual-line-mode 1)
   (if (eq ekg-capture-default-mode 'org-mode)
-        (progn
-          (require 'org)
-          (define-key ekg-notes-mode-map "\C-c\C-o" #'org-open-at-point))))
+      (progn
+        (require 'org)
+        (define-key ekg-notes-mode-map "\C-c\C-o" #'org-open-at-point)))
+  (add-hook 'post-command-hook #'ekg--note-highlight nil t))
 
 (defvar-local ekg-notes-fetch-notes-function nil
   "Function to call to fetch the notes that define this buffer.
@@ -1490,13 +1491,10 @@ tags)."
 
 (defun ekg--note-highlight ()
   "In the buffer, highlight the current note."
-  (let ((node (ewoc-locate ekg-notes-ewoc)))
-    (when (and node (ewoc-location node))
-      (move-overlay ekg-notes-hl
-                    (ewoc-location node)
-                    (- (or (if-let (next (ewoc-next ekg-notes-ewoc node))
-                               (ewoc-location next)
-                             (point-max))) 1)))))
+  (when-let ((node (ewoc-locate ekg-notes-ewoc)))
+    (move-overlay ekg-notes-hl
+                  (ewoc-location node)
+                  (ewoc-location (ewoc--node-right node)))))
 
 (defun ekg-current-note-or-error ()
   "Return the current `ekg-note'.
@@ -1526,8 +1524,7 @@ Note is not deleted from the database and will reappear when the
 view is refreshed."
   (interactive nil ekg-notes-mode)
   (let ((inhibit-read-only t))
-    (ewoc-delete ekg-notes-ewoc (ewoc-locate ekg-notes-ewoc))
-    (ekg--note-highlight)))
+    (ewoc-delete ekg-notes-ewoc (ewoc-locate ekg-notes-ewoc))))
 
 (defun ekg-notes-delete (arg)
   "Trash the current note.
@@ -1538,8 +1535,7 @@ current note without a prompt."
         (inhibit-read-only t))
     (when (or arg (y-or-n-p "Are you sure you want to delete this note?"))
       (ekg-note-trash note)
-      (ewoc-delete ekg-notes-ewoc (ewoc-locate ekg-notes-ewoc))
-      (ekg--note-highlight))))
+      (ewoc-delete ekg-notes-ewoc (ewoc-locate ekg-notes-ewoc)))))
 
 (defun ekg-notes-browse ()
   "If the note is about a browseable resource, browse to it.
@@ -1588,7 +1584,6 @@ NAME is displayed at the top of the buffer."
     (overlay-put ekg-notes-hl 'face hl-line-face)
     ;; Move past the title
     (forward-line 1)
-    (ekg--note-highlight)
     (when (eq ekg-capture-default-mode 'org-mode)
         (ekg--notes-activate-links)
         (if ekg-notes-display-images (org-redisplay-inline-images))))
@@ -1622,17 +1617,13 @@ NAME is displayed at the top of the buffer."
   "Move to the next note, if possible."
   (interactive nil ekg-notes-mode)
   (if-let (next (ewoc-next ekg-notes-ewoc (ewoc-locate ekg-notes-ewoc)))
-      (progn
-        (goto-char (ewoc-location next))
-        (ekg--note-highlight))))
+      (goto-char (ewoc-location next))))
 
 (defun ekg-notes-previous ()
   "Move to the previous note, if possible."
   (interactive nil ekg-notes-mode)
   (if-let (prev (ewoc-prev ekg-notes-ewoc (ewoc-locate ekg-notes-ewoc)))
-      (progn
-        (goto-char (ewoc-location prev))
-        (ekg--note-highlight))))
+      (goto-char (ewoc-location prev))))
 
 (defun ekg-notes-any-note-tags ()
   "Show notes with any of the tags in the current note."
