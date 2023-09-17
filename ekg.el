@@ -1573,7 +1573,7 @@ NAME is displayed at the top of the buffer."
   (setq buffer-read-only nil)
   (erase-buffer)
   (let ((ewoc (ewoc-create #'ekg-display-note-insert
-                           (propertize name 'face 'ekg-notes-mode-title))))
+                           (propertize (concat name "\n") 'face 'ekg-notes-mode-title))))
     (mapc (lambda (note) (ewoc-enter-last ewoc note)) (funcall notes-func))
     (ekg-notes-mode)
     (setq-local ekg-notes-ewoc ewoc
@@ -1583,7 +1583,12 @@ NAME is displayed at the top of the buffer."
                 ekg-notes-tags tags)
     (overlay-put ekg-notes-hl 'face hl-line-face)
     ;; Move past the title
-    (forward-line 1)
+    ;; Option 1: ; error when there's no node, e.g. show any tag, notes are in drafts
+    ;; (ewoc-goto-node ewoc (ewoc-nth ewoc 0))
+    ;; Option 2: goto the beginning of first ewoc, emmits "No Next.".
+    ;; (ewoc-goto-next ewoc 0)
+    ;; Option 3:
+    (forward-line 2)
     (when (eq ekg-capture-default-mode 'org-mode)
         (ekg--notes-activate-links)
         (if ekg-notes-display-images (org-redisplay-inline-images))))
