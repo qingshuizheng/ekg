@@ -511,7 +511,10 @@ then the note is really deleted."
 (defun ekg-content-tag-p (tag)
   "Return non-nil if TAG represents user content.
 This is opposed to tags that are used for internal purposes."
-  (and (not (member tag (list ekg-draft-tag ekg-template-tag ekg-function-tag)))
+  (and (not (member tag (list
+                         ;; ekg-draft-tag
+                         ekg-template-tag
+                         ekg-function-tag)))
        (not (ekg-tag-trash-p tag))))
 
 (defun ekg-note-active-p (note)
@@ -520,7 +523,8 @@ This is similar to `ekg-active-id-p', but takes a note, which may
 be unsaved."
   (and (not (seq-every-p (lambda (tag) (ekg-tag-trash-p tag))
                          (ekg-note-tags note)))
-       (not (member ekg-draft-tag (ekg-note-tags note)))))
+       ;; (not (member ekg-draft-tag (ekg-note-tags note)))
+       ))
 
 (defun ekg-active-id-p (id)
   "Return non-nil if the note with ID is active.
@@ -1445,7 +1449,8 @@ Does not include any tags with special uses (e.g. trash and draft
 tags)."
   (ekg-connect)
   (seq-filter (lambda (tag) (and (not (ekg-tag-trash-p tag))
-                                 (not (equal tag ekg-draft-tag))))
+                                 ;; (not (equal tag ekg-draft-tag))
+                                 ))
               (triples-subjects-of-type ekg-db 'tag)))
 
 (defun ekg-tags-including (substring)
