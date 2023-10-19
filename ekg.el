@@ -403,14 +403,10 @@ the text and may be after trailing whitespace."
     ;; update ekg-document-titles
     (when ekg-document-titles
       (let* ((id (ekg-note-id note))
-             (old-title (alist-get id ekg-document-titles nil nil #'equal))
-             (new-title (car (plist-get (ekg-note-properties note) :titled/title))))
-        (cond ((and old-title new-title)
-               (setf (alist-get id ekg-document-titles nil nil #'equal) new-title))
-              ((and old-title (null new-title))
-               (setq ekg-document-titles (assoc-delete-all id ekg-document-titles)))
-              (t
-               (push (cons id new-title) ekg-document-titles)))))
+             (new-title (plist-get (ekg-note-properties note) :titled/title)))
+        (setq ekg-document-titles
+              (nconc (assoc-delete-all id ekg-document-titles)
+                     (mapcar (lambda (title) (cons id title)) new-title)))))
     (run-hook-with-args 'ekg-note-save-hook note))
   (triples-backups-maybe-backup ekg-db (ekg-db-file))
   (set-buffer-modified-p nil))
@@ -1803,8 +1799,10 @@ The key is the subject and the value is the title."
     (setq ekg-document-titles
           (mapcan (lambda (sub)
                     (mapcar (lambda (title) (cons sub title)) (plist-get (triples-get-type ekg-db sub 'titled) :title)))
-                  (seq-filter #'ekg-active-id-p
-                              (triples-subjects-of-type ekg-db 'titled))))))
+                  ;; (seq-filter #'ekg-active-id-p
+                  (triples-subjects-of-type ekg-db 'titled)
+                  ;; )
+                  ))))
 
 (defun ekg-browse-url (title)
   "Browse the url corresponding to TITLE.
