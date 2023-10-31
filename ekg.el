@@ -683,9 +683,14 @@ Interesting is defined by whether it has meaning in itself.
 However, if FORCE is non-nil, it will be shown regardless."
   (if (or force
           (ekg-should-show-id-p (ekg-note-id note)))
-      (propertize
-       (format "[%s]\n" (ekg-note-id note))
-       'face 'ekg-resource)
+      (with-temp-buffer
+        (insert
+         (propertize
+          (format "[%s]\n" (ekg-note-id note))
+          'face 'ekg-resource))
+        (put-text-property (point-min) (point-max) 'ekg-note-props
+                           `(:id ,(ekg-note-id note)))
+        (buffer-string))
     ""))
 
 (defun ekg-display-note-text (note &optional numwords)
@@ -693,24 +698,34 @@ However, if FORCE is non-nil, it will be shown regardless."
 NUMWORDS is the max number of words to display in the note, or
 nil for all words."
   (with-temp-buffer
-    (when (ekg-note-text note)
-      (insert (ekg-insert-inlines-results
-               (ekg-note-text note)
-               (ekg-note-inlines note)
-               note)))
+    (if (ekg-note-text note)
+        (insert (ekg-insert-inlines-results
+                 (ekg-note-text note)
+                 (ekg-note-inlines note)
+                 note))
+      (insert " "))
     (when (ekg-note-mode note)
       (let ((mode-func (intern (format "%s-mode" (ekg-note-mode note)))))
         (if (fboundp mode-func) (funcall mode-func)
           (funcall (ekg-note-mode note)))))
     (mapc #'funcall ekg-format-funcs)
     (font-lock-ensure)
-    (put-text-property (point-min) (point-max) 'ekg-note-id (ekg-note-id note))
-    (concat (ekg-truncate-at (buffer-string) (or numwords ekg-note-inline-max-words)) "\n")))
+    (insert "\n")
+    (put-text-property (point-min) (point-max) 'ekg-note-props
+                       `(:text ,(ekg-note-text note)))
+    ;; TODO: how to make trim/truncate work with props
+    ;; (concat (ekg-truncate-at (buffer-string) (or numwords ekg-note-inline-max-words)) "\n")
+    (buffer-string)))
 
 (defun ekg-display-note-tagged (note)
   "Return text of the tags of NOTE."
-  (concat (mapconcat (lambda (tag) (propertize tag 'face 'ekg-tag))
-             (ekg-note-tags note) " ") "\n"))
+  (with-temp-buffer
+    (insert (mapconcat (lambda (tag) (propertize tag 'face 'ekg-tag))
+                       (ekg-note-tags note) " ")
+            "\n")
+    (put-text-property (point-min) (point-max) 'ekg-note-props
+                       `(:tags ,(ekg-note-tags note)))
+    (buffer-string)))
 
 (defun ekg-display-note-time-tracked (note &optional format-str)
   "Return text of the times NOTE was created and modified.
@@ -723,10 +738,14 @@ FORMAT-STR controls how the time is formatted."
 (defun ekg-display-note-titled (note)
   "Return text of the title of NOTE."
   (if-let (title (plist-get (ekg-note-properties note) :titled/title))
-      (propertize (concat
-               (mapconcat #'identity (plist-get (ekg-note-properties note) :titled/title)
-                          "\n") "\n")
-              'face 'ekg-title)
+      (with-temp-buffer
+        (insert
+         (propertize
+          (concat (mapconcat #'identity title "\n") "\n")
+          'face 'ekg-title))
+        (put-text-property (point-min) (point-max) 'ekg-note-props
+                           `(:titled/title ,title))
+        (buffer-string))
     ""))
 
 (defun ekg-inline-command-transclude-note (id &optional numwords)
