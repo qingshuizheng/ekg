@@ -1607,7 +1607,9 @@ Otherwise, open in Emacs with `find-file'."
              (if full
                  (browse-url url)
                (when (and file (> (length file) 0))
-                 (find-file file))))))))
+                 (find-file file)))))
+          ;; TEST more needed
+          ((listp (read id)) (eval (read id))))))
 
 (defun ekg-notes-select-and-browse-url (title)
   "Browse one of the resources in the current buffer's notes.
