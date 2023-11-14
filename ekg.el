@@ -1647,8 +1647,9 @@ NAME is displayed at the top of the buffer."
     ;; Option 3:
     (forward-line 2)
     (when (eq ekg-capture-default-mode 'org-mode)
-        (ekg--notes-activate-links)
-        (if ekg-notes-display-images (org-redisplay-inline-images))))
+      (ekg--notes-activate-links)
+      ;; (if ekg-notes-display-images (org-redisplay-inline-images))
+      ))
   (set-buffer-modified-p nil))
 
 (defun ekg--notes-activate-links()
