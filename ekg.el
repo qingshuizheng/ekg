@@ -1292,6 +1292,19 @@ Argument FINISHED is non-nil if the user has chosen a completion."
   (unless ekg-save-no-message
     (message "Note saved to drafts.")))
 
+(defun ekg-notes-ewoc-update (note)
+  "Update all ekg NOTES ewoc for change in NOTE."
+  (cl-loop for b being the buffers do
+           (with-current-buffer b
+             (when (eq major-mode 'ekg-notes-mode)
+               (let ((n (ewoc-nth ekg-notes-ewoc 0)))
+                 (while n
+                   (when (equal (ekg-note-id (ewoc-data n))
+                                (ekg-note-id note))
+                     (ewoc-set-data n note)
+                     (ewoc-invalidate ekg-notes-ewoc n))
+                   (setq n (ewoc-next ekg-notes-ewoc n))))))))
+
 (defun ekg-edit-save ()
   "Save the edited note and refresh where it appears."
   (interactive nil ekg-edit-mode)
