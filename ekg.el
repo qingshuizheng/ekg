@@ -168,6 +168,17 @@ backups in your database after it has been created, run
     (((type tty))) :underline t)
   "Face shown for EKG tags.")
 
+(defface ekg-tag-special
+  '((((type graphic)) :inherit custom-group-tag :box t :bold t :background "seashell1")
+    (((type tty))) :underline t :bold t)
+  "Face shown for EKG special tags: ekg-function-tag, ekg-draft-tag,
+ekg-template-tag.")
+
+(defface ekg-tag-magic
+  '((((type graphic)) :inherit custom-group-tag :box t :bold t :background "seashell1" :italic t)
+    (((type tty))) :underline t :bold t :italic t)
+  "Face shown for EKG tags that is an ekg-function-tag. TODO: rewrite docstring.")
+
 (defface ekg-title
   '((((type graphic)) :height 1.2 :underline t)
     (((type tty))) :underline t)
@@ -696,8 +707,32 @@ nil for all words."
 
 (defun ekg-display-note-tagged (note)
   "Return text of the tags of NOTE."
-  (concat (mapconcat (lambda (tag) (propertize tag 'face 'ekg-tag))
-             (ekg-note-tags note) " ") "\n"))
+  (concat (mapconcat
+           (lambda (tag)
+             (propertize
+              tag 'face
+              (pcase tag
+                ((pred (lambda (tag)
+                         (member
+                          tag
+                          (list ekg-draft-tag
+                                ekg-template-tag
+                                ekg-function-tag))))
+                 'ekg-tag-special)
+                ((pred (lambda (tag)
+                         (member
+                          tag
+                          (seq-difference
+                           (seq-uniq
+                            (flatten-list
+                             (mapcar (lambda (note) (ekg-note-tags note))
+                                     (ekg-get-notes-with-tag ekg-function-tag))))
+                           (list ekg-function-tag)))))
+                 'ekg-tag-magic)
+                (_
+                 'ekg-tag))))
+           (ekg-note-tags note) " ")
+          "\n"))
 
 (defun ekg-display-note-time-tracked (note &optional format-str)
   "Return text of the times NOTE was created and modified.
