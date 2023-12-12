@@ -1305,36 +1305,67 @@ Argument FINISHED is non-nil if the user has chosen a completion."
                      (lambda (_) (ekg-tags)))
           :exclusive t :exit-function #'ekg--tags-cap-exit)))
 
+(defun ekg-notes--update-ewoc-for-edit (note)
+  "TODO: docstring."
+  (cl-loop for b being the buffers do
+           (with-current-buffer b
+             (when (and (eq major-mode 'ekg-notes-mode) ekg-notes-ewoc)
+               (let ((n (ewoc-nth ekg-notes-ewoc 0)))
+                 (while n
+                   (when (or (equal (ekg-note-id (ewoc-data n))
+                                    (ekg-note-id note))
+                             (and ekg-note-orig-id
+                                  (equal ekg-note-orig-id
+                                         (ekg-note-id (ewoc-data n)))))
+                     (ewoc-set-data n note)
+                     (ewoc-invalidate ekg-notes-ewoc n))
+                   (setq n (ewoc-next ekg-notes-ewoc n))))))))
+
+(defun ekg-notes--update-ewoc-for-capture (note)
+  "TODO."
+  (cl-loop for b being the buffers do
+           (with-current-buffer b
+             (when (and (eq major-mode 'ekg-notes-mode) ekg-notes-ewoc
+                        (or (seq-intersection (ekg-note-tags note) ekg-notes-tags)
+                            (string-match-p
+                             (rx (or "latest modified" "latest created"))
+                             (substring-no-properties
+                              (ewoc--node-data
+                               (ewoc--header ekg-notes-ewoc))))))
+               (ewoc-enter-first ekg-notes-ewoc note)))))
+
+(defun ekg-notes--update-ewoc-for-deletion (note)
+  "TODO."
+  (cl-loop for b being the buffers do
+           (with-current-buffer b
+             (when (and (eq major-mode 'ekg-notes-mode) ekg-notes-ewoc
+                        (or (seq-intersection (ekg-note-tags note) ekg-notes-tags)
+                            (string-match-p
+                             (rx (or "latest modified" "latest created"))
+                             (substring-no-properties
+                              (ewoc--node-data
+                               (ewoc--header ekg-notes-ewoc))))))
+               (ewoc-enter-first ekg-notes-ewoc note)))))
+
 (defun ekg-save-draft ()
   "Save the current note as a draft."
   (interactive nil ekg-edit-mode ekg-capture-mode)
   (ekg--update-from-metadata)
   (when ekg-draft-tag
     (push ekg-draft-tag (ekg-note-tags ekg-note)))
-  (ekg--save-note-in-buffer)
-  (unless ekg-save-no-message
-    (message "Note saved to drafts.")))
+  (let ((note (ekg--save-note-in-buffer)))
+    (unless ekg-save-no-message
+      (message "Note saved to drafts."))
+    (ekg-notes--update-ewoc-for-edit note)))
 
 (defun ekg-edit-save ()
   "Save the edited note and refresh where it appears."
   (interactive nil ekg-edit-mode)
   (ekg--update-from-metadata)
-  (let ((note (ekg--save-note-in-buffer))
-        (orig-id ekg-note-orig-id))
+  (let ((note (ekg--save-note-in-buffer)))
     (unless ekg-save-no-message
       (message "Note saved."))
-    (cl-loop for b being the buffers do
-             (with-current-buffer b
-               (when (and (eq major-mode 'ekg-notes-mode) ekg-notes-ewoc)
-                 (let ((n (ewoc-nth ekg-notes-ewoc 0)))
-                   (while n
-                     (when (or (equal (ekg-note-id (ewoc-data n))
-                                      (ekg-note-id note))
-                               (and orig-id
-                                    (equal orig-id (ekg-note-id (ewoc-data n)))))
-                       (ewoc-set-data n note))
-                     (setq n (ewoc-next ekg-notes-ewoc n))))
-                 (ewoc-refresh ekg-notes-ewoc))))))
+    (ekg-notes--update-ewoc-for-edit note)))
 
 (defun ekg-edit-finalize ()
   "Save the edited note and refresh where it appears."
@@ -1346,11 +1377,14 @@ Argument FINISHED is non-nil if the user has chosen a completion."
   "Abort the current edit, restore to its orignial state."
   (interactive nil ekg-edit-mode)
   (when (y-or-n-p "Are you sure you want to abort all the edits?")
-    (ekg-save-note ekg-note-orig-note)
-    (setq-local kill-buffer-query-functions
-                (delq 'ekg-kill-buffer-query-function
-                      kill-buffer-query-functions))
-    (kill-buffer)))
+    (let ((note ekg-note-orig-note))
+      (ekg-save-note note)
+      (setq-local kill-buffer-query-functions
+                  (delq 'ekg-kill-buffer-query-function
+                        kill-buffer-query-functions))
+      (kill-buffer)
+      ;; (ekg-notes--update-ewoc-for-deletion note)
+      )))
 
 (defun ekg--split-metadata-string (val)
   "Split multi-valued metadata field VAL into the component values.
@@ -1411,12 +1445,7 @@ If EXPECT-VALID is true, warn when we encounter an unparseable field."
   (ekg--save-note-in-buffer)
   (let ((note ekg-note))
     (kill-buffer)
-    (cl-loop for b being the buffers do
-           (with-current-buffer b
-               (when (and (eq major-mode 'ekg-notes-mode)
-                          (seq-intersection (ekg-note-tags note)
-                                            ekg-notes-tags))
-                 (ewoc-enter-last ekg-notes-ewoc note))))))
+    (ekg-notes--update-ewoc-for-capture note)))
 
 (defun ekg-capture-abort ()
   "Abort the current capture.
@@ -1428,9 +1457,9 @@ Discarded notes will be moved to trash."
       (when (ekg-note-with-id-exists-p id)
         (ekg-note-delete-by-id id)))
     (setq-local kill-buffer-query-functions
-                (delq 'ekg-kill-buffer-query-function
-                      kill-buffer-query-functions))
-    (kill-buffer)))
+                (delq 'ekg-kill-buffer-query-function kill-buffer-query-functions))
+    (kill-buffer)
+    (ekg-notes--update-ewoc-for-edit ekg-note)))
 
 (defun ekg-tag-trash-p (tag)
   "Return non-nil if TAG is part of the trash."
