@@ -1333,11 +1333,11 @@ delete from the end of the metadata, we need to fix it back up."
       (setq-local org-element-use-cache nil))))
 
 ;;;###autoload
-(cl-defun ekg-capture (&key text mode tags properties id)
+(cl-defun ekg-capture (&key text mode tags properties)
   "Capture a new note, with TEXT, MODE, TAGS and other PROPERTIES.
 If ID is given, force the triple subject to be that value."
   (interactive)
-  (let* ((id (or id (ekg--generate-id)))
+  (let* ((id (ekg--generate-id))
          (buf (get-buffer-create (format "*EKG Capture (note %s)*" id)))
          (text (or text ""))
          (auto-tags (mapcan (lambda (f) (funcall f)) ekg-capture-auto-tag-funcs))
@@ -1364,18 +1364,39 @@ If ID is given, force the triple subject to be that value."
     (pop-to-buffer buf)))
 
 ;;;###autoload
-(defun ekg-capture-url (&optional url title)
-  "Capture a new note given a URL and its TITLE.
-However, if URL already exists, we edit the existing note on it."
-  (interactive "MURL: \nMTitle: \n")
+(defun ekg-capture-ref (ref title &optional tags)
+  "Capture a new note given a REF and its TITLE.
+If the ref has existing notes, choose from the existing. TAGS is
+optional, and it should be a list."
+  (interactive "MREF: \nMTitle: \n")
   (ekg-connect)
-  (let ((cleaned-title (string-replace "," "" title))
-        (existing (triples-get-subject ekg-db url)))
-    (if existing
-        (ekg-edit (ekg-get-note-with-id url))
-      (ekg-capture :tags (list (concat "doc/" (downcase cleaned-title)))
-                   :properties `(:titled/title ,(list title))
-                   :id url))))
+  (let* ((cleaned-title (string-replace "," "" title))
+         ;; TODO: also for partial matched links: `string-match-p' & `seq-contains-p'
+         (ids-by-ref (plist-get (triples-get-type ekg-db ref 'ref) :reffed))
+         (edit-fn (lambda (id) (ekg-edit (ekg-get-note-with-id id))))
+         (capture-fn
+          (lambda ()
+            (ekg-capture
+             :tags (or tags (list (concat "doc/" (downcase cleaned-title))))
+             :properties `( :reffed/ref ,(list ref)
+                            :titled/title ,(list title))))))
+    (pcase (length ids-by-ref)
+      (0 (funcall capture-fn))
+      (1 (funcall edit-fn (car ids-by-ref)))
+      (_ (let* ((col (delq
+                      nil (mapcan
+                           (lambda (id)
+                             (mapcar (lambda (title) (cons title id))
+                                     (plist-get (triples-get-type ekg-db id 'titled) :title)))
+                           (plist-get (triples-get-type ekg-db ref 'ref) :reffed))))
+                ;; TODO: annotate with tags & refs
+                (id (alist-get
+                     (completing-read
+                      "Choose from existing ref notes, or press ‘C-j’ to capture new: "
+                      col nil nil)
+                     col nil nil #'equal)))
+           (if id (funcall edit-fn id)
+             (funcall capture-fn)))))))
 
 ;;;###autoload
 (defun ekg-capture-file ()
@@ -1386,13 +1407,9 @@ file. If not, an error will be thrown."
   (ekg-connect)
   (let ((file (buffer-file-name)))
     (unless file (error "Cannot capture: no file associated with this buffer"))
-    (let* ((file (format "file:%s" (file-truename file)))
-           (existing (triples-get-subject ekg-db file)))
-      (if existing
-          (ekg-edit (ekg-get-note-with-id file))
-        (ekg-capture :tags (list (concat "doc/" (downcase (file-name-nondirectory file))))
-                     :properties `(:titled/title ,(list (file-name-nondirectory file)))
-                     :id file)))))
+    (let ((title (file-name-nondirectory file))
+          (file-link (format "file:%s" (file-truename file))))
+      (ekg-capture-ref file-link title))))
 
 (defun ekg-change-mode (mode)
   "Change the mode of the current note to MODE."
@@ -2127,17 +2144,25 @@ The key is the subject and the value is the title."
 (defun ekg-browse-url (title)
   "Browse the url corresponding to TITLE.
 If no corresponding URL is found, an error is thrown."
-  (interactive (list (completing-read "Doc: "
-                                      (mapcan
-                                       (lambda (tcons)
-                                         (when (ffap-url-p (car tcons))
-                                           (list (cdr tcons))))
-                                       (ekg-document-titles)))))
+  (interactive
+   (list
+    (completing-read
+     "Doc: "
+     (mapcan
+      (lambda (id) (plist-get (ekg-note-properties (ekg-get-note-with-id id)) :titled/title))
+      (mapcan (lambda (url) (plist-get (triples-get-type ekg-db url 'ref) :reffed))
+              (seq-filter #'ffap-url-p (triples-subjects-of-type ekg-db 'ref)))))))
   (ekg-connect)
-  (let ((subjects (seq-filter #'ffap-url-p (triples-subjects-with-predicate-object ekg-db 'titled/title title))))
-    (when (= 0 (length subjects)) (error "Could not fetch existing URL title: %s" title))
-    (when (> (length subjects) 1) (warn "Multiple URLs with the same title exist: %s" title))
-    (browse-url (car subjects))))
+  (let ((refs
+         (seq-filter
+          #'ffap-url-p
+          (mapcan (lambda (id) (plist-get (ekg-note-properties (ekg-get-note-with-id id)) :reffed/ref))
+                  (triples-subjects-with-predicate-object ekg-db 'titled/title title)))))
+    (pcase (length refs)
+      (0 (error "No existing URL for title: %s" title))
+      (1 (browse-url (car refs)))
+      (_ (browse-url (completing-read
+                      "Multiple URLs exist, please choose one: " refs))))))
 
 (defun ekg-date-tag-p (tag)
   "Return non-nil if TAG is a date tag."
