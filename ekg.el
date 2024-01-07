@@ -231,7 +231,6 @@ backups in your database after it has been created, run
   "Live sqlite database connection.")
 
 (defvar ekg-metadata-parsers '(("Tags" . ekg--metadata-update-tag)
-                               ("Resource" . ekg--metadata-update-resource)
                                ("Refs" . ekg--metadata-update-ref)
                                ("Title" . ekg--metadata-update-title))
   "Metadata fields to functions for updating data based on buffer text.
@@ -1439,25 +1438,7 @@ Return the latest `ekg-note' object."
           (ekg-note-inlines ekg-note) (cdr ticons)
           (ekg-note-mode ekg-note) major-mode
           (ekg-note-tags ekg-note) (seq-uniq (ekg-note-tags ekg-note))))
-  ;; Even though we will do this later in `ekg--normalize-note', we have to do
-  ;; this now in case we removed the resource.
-  (when (or (equal (ekg-note-id ekg-note) "") (not (ekg-note-id ekg-note)))
-    (setf (ekg-note-id ekg-note) (ekg--generate-id)))
-  (triples-with-transaction
-    ekg-db
-    (when (and ekg-note-orig-id
-               (not (eq ekg-note-orig-id (ekg-note-id ekg-note)))
-               (ekg-note-with-id-exists-p ekg-note-orig-id)
-               (not (ekg-note-with-id-exists-p (ekg-note-id ekg-note)))
-               (y-or-n-p "Changing the resource of this note will also change all references to it.  Are you sure?"))
-      (let* ((existing-types (triples-get-types ekg-db (ekg-note-id ekg-note)))
-             (conflicting-types (seq-intersection existing-types '(text tag titled reffed))))
-          (when (and conflicting-types
-                     (y-or-n-p "Existing data exists on this resource, replace?"))
-            (mapc (lambda (type) (triples-remove-type ekg-db ekg-note-orig-id type))
-                  conflicting-types))
-          (triples-move-subject ekg-db ekg-note-orig-id (ekg-note-id ekg-note))))
-    (ekg-save-note ekg-note))
+  (ekg-save-note ekg-note)
   ekg-note)
 
 (defun ekg--in-metadata-p ()
@@ -1601,10 +1582,6 @@ The metadata fields are comma separated."
   "Update the ref field from the metadata VAL."
   (setf (plist-get (ekg-note-properties ekg-note) :reffed/ref)
         val))
-
-(defun ekg--metadata-update-resource (val)
-  "Update the resource to the metadata VAL."
-  (setf (ekg-note-id ekg-note) (or val (ekg--generate-id))))
 
 (defun ekg--metadata-fields (expect-valid)
   "Return all metadata fields as a cons of labels and values.
