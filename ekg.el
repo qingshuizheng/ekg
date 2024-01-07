@@ -131,7 +131,7 @@ take longer, as more processing will be run on it."
   :type 'integer
   :group 'ekg)
 
-(defcustom ekg-display-note-template "%n(id)%n(tagged)%n(reffed)%n(titled)%n(text 500)%n(other)"
+(defcustom ekg-display-note-template "%n(tagged)%n(reffed)%n(titled)%n(text 500)%n(other)"
   "Template for displaying notes in notes buffers.
 This follows normal templating rules, but it is most likely the
 user is interested in the various %n templates that correspond to
@@ -222,11 +222,6 @@ backups in your database after it has been created, run
   '((((type graphic)) :height 1.2 :underline t)
     (((type tty))) :underline t)
   "Face shown for EKG titles.")
-
-(defface ekg-resource
-  '((((type graphic)) :inherit fixed-pitch)
-    (((type tty))) :underline t)
-  "Face shown for EKG resource.")
 
 (defface ekg-metadata
   '((default :inherit default :weight bold))
@@ -746,17 +741,6 @@ inlines."
         (when (search-backward (format ">%s" completion) (line-beginning-position) t)
           (replace-match (format "%%(transclude-note %S)" id)))))))
 
-(defun ekg-display-note-id (note &optional force)
-  "Show the id of NOTE, if it is interesting.
-Interesting is defined by whether it has meaning in itself.
-However, if FORCE is non-nil, it will be shown regardless."
-  (if (or force
-          (ekg-should-show-id-p (ekg-note-id note)))
-      (propertize
-       (format "[%s]\n" (ekg-note-id note))
-       'face 'ekg-resource)
-    ""))
-
 (defun ekg-display-note-text (note &optional numwords)
   "Return text, with mode-specific properties, of NOTE.
 NUMWORDS is the max number of words to display in the note, or
@@ -1215,22 +1199,13 @@ This will be displayed at the top of the note buffer."
           value
           (propertize "\n" 'read-only read-only 'rear-nonsticky t))))
 
-(defun ekg-should-show-id-p (id)
-  "Return non-nil if the note ID should be shown to the user.
-True when the ID represents a meaningful resource to the user,
-rather than an auto-generated number."
-  (not (numberp id)))
-
 (defun ekg--replace-metadata ()
   "Replace the metadata in a buffer."
   (let ((note ekg-note))
     (with-temp-buffer
-      (when (ekg-should-show-id-p (ekg-note-id note))
-        (insert (ekg--metadata-string "Resource" (ekg-note-id note))))
-      (insert
-       (ekg--metadata-string "Tags"
-                             (mapconcat (lambda (tag) (format "%s" tag))
-                                        (ekg-note-tags note) ", ")))
+      (insert (ekg--metadata-string
+               "Tags" (mapconcat (lambda (tag) (format "%s" tag))
+                          (ekg-note-tags note) ", ")))
       (map-apply (lambda (k v)
                    (when-let ((label (assoc-default k ekg-metadata-labels)))
                      (if (listp v)
@@ -2381,15 +2356,15 @@ as long as those notes aren't on resources that are interesting.
                      (almost-empty-note (string= (string-trim (ekg-note-text note)) "*"))
                      (empty-note (string= (string-trim (ekg-note-text note)) ""))
                      (note-without-properties (null (ekg-note-properties note))))
-               (when (and
-                      (not (ekg-should-show-id-p id))
-                      (or trashed-note (and note-without-properties
-                                            (or almost-empty-note empty-note))))
+               (when (or trashed-note
+                         (and note-without-properties
+                              (or almost-empty-note empty-note)))
                  (message "ekg-clean-db: Deleting note %s, reason: %s" id
                           (mapconcat #'identity
-                           (seq-filter #'identity (list (when trashed-note "trashed")
-                                                        (when almost-empty-note "almost empty")
-                                                        (when empty-note "empty"))) ", "))
+                           (seq-filter #'identity
+                                       (list (when trashed-note "trashed")
+                                             (when almost-empty-note "almost empty")
+                                             (when empty-note "empty"))) ", "))
                  (ekg-note-delete note))))))
   ;; TODO 2024-01-05: (ekg-clean-dup-refs)
   (ekg-clean-dup-tags)
