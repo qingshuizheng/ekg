@@ -98,7 +98,8 @@
   (ekg-capture-url "http://testurl" "A URL used for testing")
   (insert "Text added to the URL")
   (ert-simulate-command '(ekg-capture-finalize))
-  (should (equal (ekg-document-titles) (list (cons "http://testurl" "A URL used for testing"))))
+  (should (equal (mapcar (lambda (row) (nth 2 row)) ekg--title-rows)
+                 (list (cons "http://testurl" "A URL used for testing"))))
   (should (member "doc/a url used for testing" (ekg-tags)))
   ;; Re-capture, should edit the existing note.
   (ekg-capture-url "http://testurl" "A URL used for testing")
@@ -106,7 +107,8 @@
     (when (search-backward "http://testurl")
       (replace-match "http://testurl/v2"))
     (ert-simulate-command '(ekg-capture-finalize)))
-  (should (equal (ekg-document-titles) (list (cons "http://testurl/v2" "A URL used for testing")))))
+  (should (equal (mapcar (lambda (row) (nth 2 row)) ekg--title-rows)
+                 (list (cons "http://testurl/v2" "A URL used for testing")))))
 
 (ekg-deftest ekg-test-sort-nondestructive ()
   (mapc #'ekg-save-note

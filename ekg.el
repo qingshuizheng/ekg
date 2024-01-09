@@ -724,6 +724,19 @@ inlines."
    text inlines
    (lambda (inline) (ekg-inline-to-result inline note))))
 
+(defun ekg--title-rows ()
+  "Return all table rows containing titles.
+Title rows that belong to draft notes or trashed note are excluded.
+Each row contains subject, predicate, object and properties."
+  (let* ((title-rows (triples-db-select ekg-db nil 'titled/title))
+         (title-row-subs (mapcar #'car title-rows))
+         (inactive-tag-rows (append (triples-db-select ekg-db nil 'tagged/tag "draft")
+                                    (triples-db-select-pred-op
+                                     ekg-db 'tagged/tag 'like (format "%s%%" "trash/"))))
+         (inactive-tag-row-subs (mapcar #'car inactive-tag-rows)))
+    (seq-remove (lambda (row) (equal (car row) (car inactive-tag-row-subs)))
+                title-rows)))
+
 (defun ekg--transclude-titled-note-completion ()
   "Completion function for file transclusion."
   (let ((begin (save-excursion
@@ -732,24 +745,19 @@ inlines."
         (end (point)))
     (when (<= begin end)
       (list begin end
-            (completion-table-dynamic (lambda (_)
-                                        (mapcar (lambda (title-cons)
-                                                  (cons (cdr title-cons)
-                                                        (car title-cons)))
-                                                (ekg-document-titles))))
-            :exclusive t :exit-function #'ekg--transclude-cap-exit))))
+            (completion-table-with-cache
+             (lambda (_) (mapcar (lambda (row) (nth 2 row)) (ekg--title-rows))))
+            :exclusive t
+            :exit-function #'ekg--transclude-cap-exit))))
 
 (defun ekg--transclude-cap-exit (completion finished)
   "Clean up CAP after completion."
   (when finished
     (save-excursion
-      (let* ((docs (mapcar (lambda (title-cons)
-                               (cons (cdr title-cons)
-                                     (car title-cons)))
-                             (ekg-document-titles)))
-             (id (cdr (assoc completion docs #'equal))))
+      (let ((id (car (triples-subjects-with-predicate-object
+                      ekg-db 'titled/title completion))))
         (unless id (error "No document with title %s" completion))
-        (when (search-backward (format ">%s" completion) (line-beginning-position) t)
+        (when (search-backward (format ">t%s" completion) (line-beginning-position) t)
           (replace-match (format "%%(transclude-note %S)" id)))))))
 
 (defun ekg-display-note-text (note &optional numwords)
@@ -849,10 +857,10 @@ FORMAT-STR controls how the time is formatted."
   "Select a note interactively.
 Returns the ID of the note."
   (if (y-or-n-p "Select note by title? ")
-      (let* ((title-id-pairs (mapcar (lambda (note) (cons (cdr note) (car note)))
-                                     (ekg-document-titles)))
-             (selected-title (completing-read "Title: " title-id-pairs nil t)))
-        (cdr (assoc selected-title title-id-pairs)))
+      (let* ((title-rows (ekg--title-rows))
+             (titles (mapcar (lambda (row) (nth 2 row)) title-rows))
+             (title (completing-read "Title: " titles)))
+        (caar (seq-filter (lambda (row) (equal title (nth 2 row))) title-rows)))
     (let* ((notes (ekg-get-notes-with-tag
                    (completing-read "Tag: " (ekg-tags) nil t)))
            (completion-pairs (mapcar
@@ -2084,18 +2092,6 @@ notes to show. But with a prefix ARG, ask the user."
               collect (ekg-get-note-with-id id) into selected
               finally return selected))
    nil))
-
-(defun ekg-document-titles ()
-  "Return an alist of all titles.
-The key is the subject and the value is the title."
-  (ekg-connect)
-  (mapcan
-   (lambda (sub)
-     (mapcar (lambda (title) (cons sub title))
-             (plist-get (triples-get-type ekg-db sub 'titled) :title)))
-   (seq-difference
-    (triples-subjects-of-type ekg-db 'titled)
-    (ekg-inactive-note-ids))))
 
 (defun ekg-browse-url (title)
   "Browse the url corresponding to TITLE.
