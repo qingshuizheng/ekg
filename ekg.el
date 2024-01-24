@@ -131,7 +131,7 @@ take longer, as more processing will be run on it."
   :type 'integer
   :group 'ekg)
 
-(defcustom ekg-display-note-template "%n(id)%n(tagged)%n(titled)%n(text 500)%n(other)"
+(defcustom ekg-display-note-template "%n(id)%n(tagged)%n(reffed)%n(titled)%n(text 500)%n(other)"
   "Template for displaying notes in notes buffers.
 This follows normal templating rules, but it is most likely the
 user is interested in the various %n templates that correspond to
@@ -213,6 +213,11 @@ backups in your database after it has been created, run
     (((type tty))) :underline t)
   "Face shown for EKG tags.")
 
+(defface ekg-ref
+  '((((type graphic)) :height 1.2 :italic t)
+    (((type tty))) :italic t)
+  "Face shown for EKG references.")
+
 (defface ekg-title
   '((((type graphic)) :height 1.2 :underline t)
     (((type tty))) :underline t)
@@ -232,6 +237,7 @@ backups in your database after it has been created, run
 
 (defvar ekg-metadata-parsers '(("Tags" . ekg--metadata-update-tag)
                                ("Resource" . ekg--metadata-update-resource)
+                               ("Refs" . ekg--metadata-update-ref)
                                ("Title" . ekg--metadata-update-title))
   "Metadata fields to functions for updating data based on buffer text.
 Each function updates the buffer's `ekg-note' with the results of
@@ -241,18 +247,14 @@ for single value types. If `ekg-property-multivalue-type' has an
 entry, it is a multivalue type.")
 
 (defconst ekg-property-multivalue-type '(("Tags" . comma)
+                                         ("Refs" . comma)
                                          ("Title" . line))
   "Defines per typehow multiple values are separated.
 The values are symbols, COMMA means a comma-separated value. LINE
 means each value gets its own property line.")
 
-(defconst ekg-property-multivalue-type '(("Tags" . comma)
-                                         ("Title" . line))
-  "Defines per type how multiple values are separated.
-The values are symbols, COMMA means a comma-separated value. LINE
-means each value gets its own property line.")
-
-(defvar ekg-metadata-labels '((:titled/title . "Title"))
+(defvar ekg-metadata-labels '((:titled/title . "Title")
+                              (:reffed/ref . "Refs"))
   "Alist of properties that can be on the note and their labels.
 The label needs to match the keys in the `ekg-metadata-parsers' alist.")
 
@@ -369,10 +371,13 @@ callers have already called this function")
   ;; A URL can be a subject too, and has data, including the title. The title is
   ;; something that can be used to select the subject via completion.
   (triples-add-schema ekg-db 'titled '(title :base/type string))
+  (triples-add-schema ekg-db 'title '(titled :base/virtual-reversed titled/title))
+  (triples-add-schema ekg-db 'reffed '(ref :base/type string))
+  (triples-add-schema ekg-db 'ref '(reffed :base/virtual-reversed reffed/ref))
   (triples-add-schema ekg-db 'ekg '(version :base/type cons :base/unique t))
   (run-hooks 'ekg-add-schema-hook))
 
-(defvar ekg-schema-text-cotypes '(text tagged time-tracked titled)
+(defvar ekg-schema-text-cotypes '(text tagged time-tracked titled reffed)
   "All the types that are used in the ekg schema on text entities.
 Extensions can add to this list, but should not remove from it.
 Any type here in considered owned by ekg and will be removed
@@ -465,6 +470,8 @@ if it is time for one, according to the settings in
                         :modified-time modified-time)
       (setf (ekg-note-modified-time note) modified-time))
     (mapc (lambda (tag) (triples-set-type ekg-db tag 'tag)) (ekg-note-tags note))
+    (mapc (lambda (title) (triples-set-type ekg-db title 'title)) (plist-get (ekg-note-properties note) :titled/title))
+    (mapc (lambda (ref) (triples-set-type ekg-db ref 'ref)) (plist-get (ekg-note-properties note) :reffed/ref))
     (apply #'triples-set-types ekg-db (ekg-note-id note) (ekg-note-properties note))
     ;; For any properties that no longer have a value, delete the type.  Iterate
     ;; over the plist, and for each key, if the value is nil, delete the type.
@@ -547,6 +554,11 @@ If the ID does not exist, create a new note with that ID."
   "Get a list of note structs with TITLE."
   (ekg-connect)
   (mapcar #'ekg-get-note-with-id (triples-subjects-with-predicate-object ekg-db 'titled/title title)))
+
+(defun ekg-get-notes-with-ref (ref)
+  "Get a list of note structs with REF."
+  (ekg-connect)
+  (mapcar #'ekg-get-note-with-id (triples-subjects-with-predicate-object ekg-db 'reffed/ref ref)))
 
 (defun ekg-note-delete (note)
   "Delete NOTE from the database."
@@ -784,6 +796,39 @@ FORMAT-STR controls how the time is formatted."
   (if-let (titles (plist-get (ekg-note-properties note) :titled/title))
       (propertize (concat (mapconcat #'identity titles ", ") "\n")
                   'face 'ekg-title)
+    ""))
+
+(defun ekg-display-note-reffed (note)
+  "Return text of the references of NOTE."
+  (if-let ((refs (plist-get (ekg-note-properties note) :reffed/ref)))
+      (let (links citations forms undefined)
+        (dolist (ref refs)
+          (cond ((ffap-url-p ref)
+                 (push ref links))
+                ((string-match-p "[a-zA-Z0-9:?-_]+" ref)
+                 (push ref citations))
+                ((read ref)
+                 (push ref forms))
+                (t unknowns)))
+        (propertize
+         (concat
+          (mapconcat
+           #'identity
+           (delq
+            nil
+            (list (when citations
+                    (format "[cite:%s]"
+                            (mapconcat
+                             (lambda (cite)
+                               (concat "@" cite))
+                             (nreverse citations) ";")))
+                  (when links (mapconcat (lambda (l) (format "[%s]" l))
+                                         (nreverse links) "\n"))
+                  (when forms (mapconcat #'identity (nreverse forms) "\n"))
+                  (when undefined (mapconcat #'identity (nreverse unknowns) ", "))))
+           "\n")
+          "\n")
+         'face 'ekg-ref))
     ""))
 
 (defun ekg-inline-command-transclude-note (id &optional numwords)
@@ -1414,7 +1459,7 @@ Return the latest `ekg-note' object."
                (not (ekg-note-with-id-exists-p (ekg-note-id ekg-note)))
                (y-or-n-p "Changing the resource of this note will also change all references to it.  Are you sure?"))
       (let* ((existing-types (triples-get-types ekg-db (ekg-note-id ekg-note)))
-             (conflicting-types (seq-intersection existing-types '(text tag titled))))
+             (conflicting-types (seq-intersection existing-types '(text tag titled reffed))))
           (when (and conflicting-types
                      (y-or-n-p "Existing data exists on this resource, replace?"))
             (mapc (lambda (type) (triples-remove-type ekg-db ekg-note-orig-id type))
@@ -1557,8 +1602,13 @@ The metadata fields are comma separated."
 
 (defun ekg--metadata-update-title (val)
   "Update the title field from the metadata VAL."
-  (setf (ekg-note-properties ekg-note)
-        (plist-put (ekg-note-properties ekg-note) :titled/title val)))
+  (setf (plist-get (ekg-note-properties ekg-note) :titled/title)
+        val))
+
+(defun ekg--metadata-update-ref (val)
+  "Update the ref field from the metadata VAL."
+  (setf (plist-get (ekg-note-properties ekg-note) :reffed/ref)
+        val))
 
 (defun ekg--metadata-update-resource (val)
   "Update the resource to the metadata VAL."
@@ -2242,19 +2292,18 @@ the database after the upgrade, in list form."
                  (triples-remove-type ekg-db tag 'tag)
                  (triples-set-type ekg-db ekg-trash-tag 'tag)))))))
 
-(defun ekg-tag-used-p (tag)
-  "Return non-nil if TAG has useful information."
+(defun ekg-remove-orphaned-subjects ()
+  "Remove orphaned subjects that belong to no note.
+Orphans could be tags, refs, titles.
+REVIEW: compare with `ekg-clean-leftover-types'.
+FIXME: all titles are removed, why?"
   (ekg-connect)
-  (triples-get-type ekg-db tag 'tag))
-
-(defun ekg-remove-unused-tags ()
-  "Remove all tags that are not used and have no info."
-  (ekg-connect)
-  (cl-loop for tag in (seq-filter
-                       (lambda (tag) (not (ekg-tag-used-p tag)))
-                       (triples-subjects-of-type ekg-db 'tag))
-           do
-           (ekg-tag-delete tag)))
+  (let ((subs (list 'tag 'ref 'title)))
+    (cl-loop for sub in subs do
+             (mapcar (lambda (val) (triples-remove-type ekg-db val sub))
+                     (seq-remove
+                      (lambda (val) (triples-get-type ekg-db val sub))
+                      (triples-subjects-of-type ekg-db sub))))))
 
 (defun ekg-clean-db ()
   "Clean all useless or malformed data from the database.
@@ -2269,8 +2318,8 @@ database is bigger than it should be.
 
 Specifically, this does a few things:
 
-1) Calls `ekg-remove-unused-tags' to remove all tags that no note
-is using.
+1) Calls `ekg-remove-orphaned-subjects' to remove all tags, refs,
+titles that no note is using.
 
 2) Deletes any notes that have no content or almost no content,
 as long as those notes aren't on resources that are interesting.
@@ -2282,7 +2331,7 @@ as long as those notes aren't on resources that are interesting.
   (interactive)
   (ekg-connect)
   (ekg-backup t)
-  (ekg-remove-unused-tags)
+  (ekg-remove-orphaned-subjects)
   (cl-loop for id in (triples-subjects-of-type ekg-db 'text) do
            (let ((note (ekg-get-note-with-id id))
                  (deleted))
@@ -2317,6 +2366,7 @@ as long as those notes aren't on resources that are interesting.
                                                         (when almost-empty-note "almost empty")
                                                         (when empty-note "empty"))) ", "))
                  (ekg-note-delete note))))))
+  ;; TODO 2024-01-05: (ekg-clean-dup-refs)
   (ekg-clean-dup-tags)
   (ekg-clean-leftover-types))
 
