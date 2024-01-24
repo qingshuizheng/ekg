@@ -980,10 +980,6 @@ This is used when editing existing notes.")
 (defvar-local ekg-note-orig-note nil
   "Holds the original note before edit.")
 
-(defvar-local ekg-note-orig-id nil
-  "Holds the original ID (subject) for this note.
-This is needed to identify references to refresh when the subject is changed.")
-
 (defvar-local ekg-note-orig-fields nil
   "Holds the fields that were populated when the note was loaded.")
 
@@ -1405,9 +1401,8 @@ file. If not, an error will be thrown."
         (funcall (ekg-note-mode note)))
       (ekg-edit-mode 1)
       (ekg--set-local-variables)
-      (setq-local ekg-note (copy-ekg-note note)       ; shallow copy
-                  ekg-note-orig-note (copy-tree note) ; deep copy to avoid later change
-                  ekg-note-orig-id (ekg-note-id note))
+      (setq-local ekg-note (copy-ekg-note note)        ; shallow copy
+                  ekg-note-orig-note (copy-tree note)) ; deep copy to avoid later change
       ;; When re-editing a note that's a draft, we need to remove the draft tag
       ;; so that when we save it, it's not a draft anymore.
       (setf (ekg-note-tags ekg-note)
@@ -1541,8 +1536,7 @@ Argument FINISHED is non-nil if the user has chosen a completion."
   "Save the edited note and refresh where it appears."
   (interactive nil ekg-edit-mode)
   (ekg--update-from-metadata)
-  (let ((note (ekg--save-note-in-buffer))
-        (orig-id ekg-note-orig-id))
+  (let ((note (ekg--save-note-in-buffer)))
     (unless ekg-save-no-message
       (message "Note saved."))
     (cl-loop for b being the buffers do
@@ -1550,10 +1544,8 @@ Argument FINISHED is non-nil if the user has chosen a completion."
                (when (and (eq major-mode 'ekg-notes-mode) ekg-notes-ewoc)
                  (let ((n (ewoc-nth ekg-notes-ewoc 0)))
                    (while n
-                     (when (or (equal (ekg-note-id (ewoc-data n))
-                                      (ekg-note-id note))
-                               (and orig-id
-                                    (equal orig-id (ekg-note-id (ewoc-data n)))))
+                     (when (equal (ekg-note-id (ewoc-data n))
+                                  (ekg-note-id note))
                        (ewoc-set-data n note)
                        (ewoc-invalidate ekg-notes-ewoc n))
                      (setq n (ewoc-next ekg-notes-ewoc n)))))))))
