@@ -724,18 +724,32 @@ inlines."
    text inlines
    (lambda (inline) (ekg-inline-to-result inline note))))
 
-(defun ekg--title-rows ()
+(defun ekg-db--rows-with-pred/title ()
   "Return all table rows containing titles.
 Title rows that belong to draft notes or trashed note are excluded.
 Each row contains subject, predicate, object and properties."
-  (let* ((title-rows (triples-db-select ekg-db nil 'titled/title))
-         (title-row-subs (mapcar #'car title-rows))
-         (inactive-tag-rows (append (triples-db-select ekg-db nil 'tagged/tag "draft")
-                                    (triples-db-select-pred-op
-                                     ekg-db 'tagged/tag 'like (format "%s%%" "trash/"))))
+  (let* ((inactive-tag-rows (append (ekg-db--rows-with-pred-and-objs 'tagged/tag "draft")
+                                    (ekg-db--rows-with-pred-and-obj-matching
+                                     'tagged/tag 'like (format "%s%%" "trash/"))))
          (inactive-tag-row-subs (mapcar #'car inactive-tag-rows)))
-    (seq-remove (lambda (row) (equal (car row) (car inactive-tag-row-subs)))
-                title-rows)))
+    (seq-remove (lambda (row) (member (car row) inactive-tag-row-subs))
+                (ekg-db--rows-with-pred 'titled/title))))
+
+;; (benchmark-elapse-and-ratio
+;;  (mapcar (lambda (id)
+;;            (let* ((titles (mapcar #'caddr (triples-db-select ekg-db id 'titled/title)))
+;;                   (tags (mapcar #'caddr (triples-db-select ekg-db id 'tagged/tag)))
+;;                   (refs (mapcar #'caddr (triples-db-select ekg-db id 'reffed/ref))))
+;;              (list id titles tags refs)))
+;;          (mapcar #'car (ekg-db--rows-with-pred/title)))
+;;  )
+
+
+;; (benchmark-elapse-and-ratio
+;;   (mapcar #'car (ekg-db--rows-with-pred/title)))
+
+;; (defun ekg-title-id-pairs ()
+;;   (mapcar #'car (ekg-db--rows-with-pred/title)))
 
 (defun ekg--transclude-titled-note-completion ()
   "Completion function for file transclusion."
@@ -746,7 +760,9 @@ Each row contains subject, predicate, object and properties."
     (when (<= begin end)
       (list begin end
             (completion-table-with-cache
-             (lambda (_) (mapcar (lambda (row) (nth 2 row)) (ekg--title-rows))))
+             (lambda (_)
+               (mapcar (lambda (row) (nth 2 row))
+                       (ekg-db--rows-with-pred/title))))
             :exclusive t
             :exit-function #'ekg--transclude-cap-exit))))
 
@@ -844,6 +860,10 @@ FORMAT-STR controls how the time is formatted."
     (insert-file-contents file)
     (ekg-truncate-at (buffer-string) (or numwords ekg-note-inline-max-words))))
 
+;; TODO: need to cache, except for the first time pulling.
+;; wrap the results in org block? with parameters
+;; keyword: ekg-tsc: note/file/url :line :what_src_block_to_use
+;; command to preview at editable buffer (capture/edit)
 (defun ekg-inline-command-transclude-website (url &optional numwords)
   "Return the contents of the URL."
   (let ((url-buffer (url-retrieve-synchronously url)))
@@ -857,10 +877,22 @@ FORMAT-STR controls how the time is formatted."
   "Select a note interactively.
 Returns the ID of the note."
   (if (y-or-n-p "Select note by title? ")
-      (let* ((title-rows (ekg--title-rows))
+      (let* ((title-rows (ekg-db--rows-with-pred/title))
              (titles (mapcar (lambda (row) (nth 2 row)) title-rows))
-             (title (completing-read "Title: " titles)))
-        (caar (seq-filter (lambda (row) (equal title (nth 2 row))) title-rows)))
+             (annfn (lambda (it)
+                      (mapconcat
+                       #'identity
+                       (triples-get-type
+                        ekg-db (car (plist-get (triples-get-type ekg-db it 'title)
+                                               :titled)) 'tagged/tag))))
+             (title (completing-read
+                     "Title: "
+                     (lambda (input pred action)
+                       (if (eq action 'metadata)
+                           `(metadata (display-sort-function . ,#'identity)
+                                      (annotation-function . ,annfn))
+                         (complete-with-action action titles input pred)))))
+             (caar (seq-filter (lambda (row) (equal title (nth 2 row))) title-rows))))
     (let* ((notes (ekg-get-notes-with-tag
                    (completing-read "Tag: " (ekg-tags) nil t)))
            (completion-pairs (mapcar
@@ -884,7 +916,8 @@ Returns the ID of the note."
         (args))
     (pcase command
       ("transclude-note" (setq args (list (ekg-select-note))))
-      ("transclude-file" (setq args (list (read-file-name "File: ")))))
+      ("transclude-file" (setq args (list (read-file-name "File: "))))
+      ("transclude-website" (setq args (list (ffap-read-file-or-url "url to transclude: " nil)))))
     (insert (format "%%%S" (cons (intern command) args)))))
 
 (defun ekg-note-snippet (note &optional max-length)
@@ -1708,6 +1741,21 @@ a write if there is a problem."
       (message "%d notes cleaned of leftover information: %s" (length cleaned)
                (mapconcat (lambda (id) (format "%s" id)) cleaned ", ")))))
 
+(defun ekg--clean-orphaned-subjects-of-virtual-reversed-types ()
+  "Remove orphaned subjects that belong to no note.
+Orphans could be tags, refs, titles."
+  (ekg-connect)
+  (let* ((cpreds (mapcar #'car (triples-with-predicate ekg-db 'base/virtual-reversed)))
+         (subs (mapcar
+                (lambda (cpred)
+                  (intern-soft (car (split-string (format "%s" cpred) "/"))))
+                cpreds)))) ; -> text/tag/ref/title
+    (cl-loop for sub in subs do
+             (mapcar (lambda (val) (triples-remove-type ekg-db val sub))
+                     (seq-remove
+                      (lambda (val) (triples-get-type ekg-db val sub))
+                      (triples-subjects-of-type ekg-db sub)))))
+
 ;; In order for emacsql / sqlite to not give build warnings we need to declare
 ;; them. Because we only require one to be installed, following the
 ;; implementation in the triples library, we can't just require them.
@@ -2269,7 +2317,7 @@ the database after the upgrade, in list form."
                  (triples-remove-type ekg-db tag 'tag)
                  (triples-set-type ekg-db ekg-trash-tag 'tag)))))))
 
-(defun ekg-remove-orphaned-subjects ()
+(defun ekg--clean-orphaned-subjects-of-virtual-reversed-types ()
   "Remove orphaned subjects that belong to no note.
 Orphans could be tags, refs, titles.
 REVIEW: compare with `ekg-clean-leftover-types'.
@@ -2295,7 +2343,7 @@ database is bigger than it should be.
 
 Specifically, this does a few things:
 
-1) Calls `ekg-remove-orphaned-subjects' to remove all tags, refs,
+1) Calls `ekg--clean-orphaned-subjects-of-virtual-reversed-types' to remove all tags, refs,
 titles that no note is using.
 
 2) Deletes any notes that have no content or almost no content,
@@ -2308,7 +2356,7 @@ as long as those notes aren't on resources that are interesting.
   (interactive)
   (ekg-connect)
   (ekg-backup t)
-  (ekg-remove-orphaned-subjects)
+  (ekg--clean-orphaned-subjects-of-virtual-reversed-types)
   (cl-loop for id in (triples-subjects-of-type ekg-db 'text) do
            (let ((note (ekg-get-note-with-id id))
                  (deleted))
