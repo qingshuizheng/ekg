@@ -436,6 +436,15 @@ if it is time for one, according to the settings in
            (error msg (cdr err))
          (lwarn :error 'ekg msg (cdr err)))))))
 
+(defun ekg-should-update-modified-time-p (a b)
+  "A check to determine if modified-time should be updated to db.
+NOTE changes are compared to the original note."
+  (or (null ekg-note-orig-note)
+      (not (and (equal (ekg-note-tags a) (ekg-note-tags b))
+                (equal (ekg-note-text a) (ekg-note-text b))
+                (equal (ekg-note-inlines a) (ekg-note-inlines b))
+                (equal (ekg-note-properties a) (ekg-note-properties b))))))
+
 (defun ekg-save-note (note)
   "Save NOTE in database, replacing note information there."
   (ekg-connect)
@@ -466,7 +475,10 @@ if it is time for one, according to the settings in
                                :type (ekg-inline-type inline)))
     ;; Note that we recalculate modified time here, since we are modifying the
     ;; entity.
-    (let ((modified-time (time-convert (current-time) 'integer)))
+    (let ((modified-time
+           (if (ekg-should-update-modified-time-p ekg-note-orig-note note)
+               (time-convert (current-time) 'integer)
+             (ekg-note-modified-time ekg-note-orig-note))))
       (triples-set-type ekg-db (ekg-note-id note) 'time-tracked
                         :creation-time (ekg-note-creation-time note)
                         :modified-time modified-time)
