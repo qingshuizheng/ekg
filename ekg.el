@@ -845,7 +845,7 @@ FORMAT-STR controls how the time is formatted."
 (defun ekg-display-note-titled (note)
   "Return text of the title of NOTE."
   (if-let (titles (plist-get (ekg-note-properties note) :titled/title))
-      (propertize (concat (mapconcat #'identity titles ", ") "\n")
+      (propertize (concat (mapconcat #'identity titles "\n ") "\n")
                   'face 'ekg-title)
     ""))
 
