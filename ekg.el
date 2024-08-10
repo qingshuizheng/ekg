@@ -829,9 +829,17 @@ nil for all words."
              (ekg-truncate-at (buffer-string)
                               (or numwords ekg-note-inline-max-words))) "\n")))
 
+(defvar ekg-notes-tag-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] 'ekg-notes-tag)))
+
 (defun ekg-display-note-tagged (note)
   "Return text of the tags of NOTE."
-  (concat (mapconcat (lambda (tag) (propertize tag 'face 'ekg-tag))
+  (concat (mapconcat (lambda (tag)
+                       (propertize tag
+                                   'face 'ekg-tag
+                                   'mouse-face 'mode-line-highlight
+                                   'local-map ekg-notes-tag-keymap))
                      (ekg-note-tags note) " ") "\n"))
 
 (defun ekg-display-note-time-tracked (note &optional format-str)
