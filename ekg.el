@@ -246,7 +246,7 @@ value types.  If `ekg-property-multivalue-type' has an entry, it
 is a multivalue type.")
 
 (defconst ekg-property-multivalue-type '(("Tags" . comma)
-                                         ("Refs" . comma)
+                                         ("Refs" . line)
                                          ("Title" . line))
   "Defines per typehow multiple values are separated.
 The values are symbols, COMMA means a comma-separated value.
