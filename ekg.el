@@ -1649,10 +1649,10 @@ attempt the completion."
 (defun ekg--tags-complete ()
   "Completion function for tags, CAPF-style."
   (let ((end (save-excursion
-               (skip-chars-forward "^,\t\n")
+               (skip-chars-forward "^,，\t\n")
                (point)))
         (start (save-excursion
-                 (skip-chars-backward "^,\t\n:")
+                 (skip-chars-backward "^,，\t\n:")
                  ;; We are at the right boundary, but now ignore whitespace.
                  (skip-chars-forward "\s+")
                  (point))))
@@ -1667,7 +1667,7 @@ If so, call the necessary hooks."
   (let ((field (ekg--metadata-current-field)))
     (when (equal "Tags" (car field))
       (let ((current-tags (ekg-note-tags ekg-note)))
-        (dolist (maybe-tag (mapcar #'string-trim (split-string (cdr field) ",")))
+        (dolist (maybe-tag (mapcar #'string-trim (split-string (cdr field) "[,，]+")))
           (when (and (not (member maybe-tag current-tags))
                      (member maybe-tag (ekg-tags)))
             (ekg--update-from-metadata)
@@ -1711,7 +1711,7 @@ If so, call the necessary hooks."
 (defun ekg--split-metadata-string (val)
   "Split multi-valued metadata field VAL into the component values.
 The metadata fields are comma separated."
-  (split-string val (rx (seq ?\, (zero-or-more space))) t (rx (1+ space))))
+  (split-string val (rx (seq (or ?\, ?\，) (zero-or-more space))) t (rx (1+ space))))
 
 (defun ekg--metadata-update-tag (val)
   "Update the tag field from the metadata VAL."
