@@ -1512,9 +1512,12 @@ This is needed to identify references to refresh when the subject is changed.")
 
 (defun ekg--note-selection-label (note)
   "Return a short title or text excerpt identifying NOTE."
-  (let* ((title (mapconcat #'identity
-                          (plist-get (ekg-note-properties note) :titled/title)
-                          ", "))
+  (let* ((titles (plist-get (ekg-note-properties note) :titled/title))
+         ;; A single-valued title comes back as a string, a multi-valued one as a
+         ;; list; mapping over the string would walk it character by character.
+         (title (cond ((null titles) "")
+                      ((listp titles) (mapconcat #'identity titles ", "))
+                      (t (format "%s" titles))))
          (label (string-trim
                  (replace-regexp-in-string
                   "[\n\t ]+" " "
@@ -1593,7 +1596,9 @@ STATE is the note's display state."
                  ('outline "▿ ") ('folded "▸ ") (_ "▾ "))
                'face guide-face
                'line-prefix (get-text-property (point) 'line-prefix)
-               'help-echo "TAB: full content, titles, folded"))
+               'help-echo "TAB: full content, titles, folded"
+               ;; 让 `u'（update at point）在行首三角上也算"在标签行上"
+               :ekg-prop-key 'tagged/tag))
       (let ((text (buffer-string)))
         (add-text-properties 0 (length text)
                              `(ekg-note-id ,(ekg-note-id note)
