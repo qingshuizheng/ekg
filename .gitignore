@@ -5,3 +5,4 @@ doc/*info
 .claude/
 project.org
 *.log
+.DS_Store
