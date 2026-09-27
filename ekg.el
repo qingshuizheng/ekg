@@ -991,7 +991,11 @@ NUMWORDS and FORMAT are standard options, see
           (funcall (ekg-note-mode note)))))
     (mapc #'funcall ekg-format-funcs)
     (unless (member 'plaintext format)
-      (font-lock-ensure)
+      ;; Suppress noisy mode-init messages (e.g. sh-mode "Indentation setup...")
+      ;; that org-src-fontify-block triggers while fontifying in this temp buffer.
+      (let ((inhibit-message t)
+            (message-log-max nil))
+        (font-lock-ensure))
       (put-text-property (point-min) (point-max) 'ekg-note-id (ekg-note-id note)))
     (ekg-display--format (buffer-string) numwords format)))
 
