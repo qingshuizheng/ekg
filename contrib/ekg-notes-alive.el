@@ -85,6 +85,14 @@
 ;;    "at least MIN" regexp.  Valid bounds pass through untouched, so
 ;;    this is a no-op for every other rx user.  With this in place,
 ;;    `ekg-notes-display-images' can be safely enabled again.
+;;
+;; 10. No hl-line highlight.  `hl-line-mode' is turned off in notes
+;;    buffers (on mode entry and on every mount): the current-line
+;;    highlight visually conflicts with the live-rendered list.
+;;
+;; 11. Prominent group separators.  Group headers in the time-grouped
+;;    view now span the line with full-width rules on a dark
+;;    background, instead of the small "── name (n)" label.
 
 ;;; Code:
 
@@ -156,6 +164,18 @@ property is contiguous between notes."
           (list 0 0 0 (nth 3 (decode-time time))
                 (nth 4 (decode-time time)) (nth 5 (decode-time time))))))
 
+(defun ekg-notes-alive--group-header-vnode (name notes)
+  "Return a prominent separator vnode for NOTES named NAME.
+The separator spans the line with full-width rules and a dark
+background, so groups stand out in the notes log view."
+  (vui-text
+   (format "%s %s (%d) %s\n"
+           (make-string 12 ?─) name (length notes)
+           (make-string 12 ?─))
+   :key (intern (format "group-%s" name))
+   :face '(:inherit bold :background "#3a3d41" :foreground "#ffffff")
+   :ekg-note-id (ekg-note-id (car notes))))
+
 (defun ekg-notes-alive--grouped-vnodes (notes)
   "Return NOTE vnodes grouped by modified time, with group headers.
 Group headers carry the `:ekg-note-id' of the first note of the group
@@ -176,10 +196,7 @@ so navigation across the list keeps working."
        (let ((ns (nreverse (gethash name by))))
          (when ns
            (cons
-            (vui-text (format "── %s (%d)\n" name (length ns))
-              :key (intern (format "group-%s" name))
-              :face 'bold
-              :ekg-note-id (ekg-note-id (car ns)))
+            (ekg-notes-alive--group-header-vnode name ns)
             (mapcar #'ekg-notes-alive--note-vnode ns)))))
      '("今天" "昨天" "本周" "更早"))))
 
@@ -359,6 +376,16 @@ The tag is prompted for, from the tags present in the current list."
                                              #'ekg-notes-alive--on-file-change)
                       file)))))))
 
+(defun ekg-notes-alive--disable-hl-line ()
+  "Turn off `hl-line-mode' in the notes buffer.
+The current-line highlight visually conflicts with the live-rendered
+notes list, so it is disabled whenever the notes mode is entered."
+  (when (and (derived-mode-p 'ekg-notes-mode)
+             (bound-and-true-p hl-line-mode))
+    (hl-line-mode -1)))
+
+(add-hook 'ekg-notes-mode-hook #'ekg-notes-alive--disable-hl-line)
+
 (defun ekg-notes-alive--mount (orig-fn name notes-func)
   "Around-advice for `ekg--notes-mount'.
 
@@ -367,6 +394,7 @@ props in place (diff re-render) instead of erasing the buffer and
 re-creating the whole tree.  Falls back to ORIG-FN for the first
 mount in a buffer.  The tag filter is applied by wrapping NOTES-FUNC;
 the header line and the database watch are kept in sync afterwards."
+  (ekg-notes-alive--disable-hl-line)
   (let* ((notes-func (ekg-notes-alive--wrap-notes-func notes-func))
          (instance (and (derived-mode-p 'ekg-notes-mode)
                         (bound-and-true-p ekg-notes--instance)
