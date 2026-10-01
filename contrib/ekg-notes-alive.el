@@ -93,6 +93,12 @@
 ;; 11. Prominent group separators.  Group headers in the time-grouped
 ;;    view now span the line with full-width rules on a dark
 ;;    background, instead of the small "── name (n)" label.
+;;
+;; 12. Org rich preview.  Org-mode notes render their full text with
+;;    org's own font-lock faces (headline levels, emphasis, links) and
+;;    foldable headlines: click a headline to collapse / expand its
+;;    subtree.  Fold state is buffer-local and survives refreshes; a
+;;    per-note cache keeps refreshes over unchanged notes cheap.
 
 ;;; Code:
 
@@ -109,6 +115,12 @@ database file changes on disk."
 (defcustom ekg-notes-alive-auto-refresh-delay 0.5
   "Debounce seconds before auto-refreshing after a database change."
   :type 'number
+  :group 'ekg)
+
+(defcustom ekg-notes-alive-org-render t
+  "When non-nil, org-mode notes render with org faces and foldable
+headlines in the notes list."
+  :type 'boolean
   :group 'ekg)
 
 (defvar-local ekg-notes-alive--filter-tag nil
@@ -139,9 +151,13 @@ current notes buffer.")
 (defun ekg-notes-alive--note-line (note)
   "Return NOTE's display text plus a trailing blank line.
 The trailing newlines belong to NOTE so that the `:ekg-note-id' text
-property is contiguous between notes."
-  (concat (string-trim-right (ekg-display-note note ekg-display-note-template))
-          "\n\n"))
+property is contiguous between notes.  Org-mode notes get the rich
+rendering from `ekg-notes-alive--org-note-line'."
+  (if (and ekg-notes-alive-org-render
+           (eq (ekg-note-mode note) 'org-mode))
+      (ekg-notes-alive--org-note-line note)
+    (concat (string-trim-right (ekg-display-note note ekg-display-note-template))
+            "\n\n")))
 
 (defun ekg-notes-alive--note-vnode (note)
   "Return a vui-text vnode for NOTE, with error isolation."
@@ -156,6 +172,134 @@ property is contiguous between notes."
          :face 'error
          :key (intern (format "note-%s" id))
          :ekg-note-id id)))))
+
+;;; Org rich preview: font-locked org text with foldable headlines.
+;;
+;; Org-mode notes render their full text with org's own font-lock faces
+;; (headline levels, emphasis, links) instead of the plain truncated
+;; template text.  Headlines carry a fold arrow and are clickable to
+;; collapse / expand their subtree; the fold state is buffer-local and
+;; survives the diff re-render (it is re-read from
+;; `ekg-notes-alive--collapsed' on every render).  Rendering goes
+;; through a per-note cache keyed by text identity + fold version, so
+;; refreshes over unchanged notes do not re-fontify.
+
+(defvar-local ekg-notes-alive--collapsed (make-hash-table :test 'equal)
+  "Hash of (note-id . headline-line-number) currently collapsed.")
+
+(defvar-local ekg-notes-alive--collapse-version 0
+  "Bumped whenever a headline is folded or unfolded, to invalidate
+the org render cache.")
+
+(defvar-local ekg-notes-alive--org-render-cache (make-hash-table :test 'equal)
+  "Per-note org render cache: note-id -> (text version . rendered).")
+
+(defun ekg-notes-alive--org-meta-template ()
+  "Return the display template with its text section removed.
+The rich org body replaces the (possibly truncated) `%n(text ...)'
+section of `ekg-display-note-template'; every other section keeps the
+user's template choice."
+  (replace-regexp-in-string "%n(text[^)]*)" ""
+                            ekg-display-note-template))
+
+(defun ekg-notes-alive--org-note-line (note)
+  "Return NOTE's rich org display: template metadata + font-locked text."
+  (let* ((meta (string-trim-right
+                (ekg-display-note note (ekg-notes-alive--org-meta-template))))
+         (body (ekg-notes-alive--org-text-rendered note)))
+    (concat (if (string-empty-p meta) "" (concat meta "\n"))
+            body "\n\n")))
+
+(defun ekg-notes-alive--org-text-rendered (note)
+  "Return NOTE's org text, font-locked and with folded subtrees hidden."
+  (let* ((id (ekg-note-id note))
+         (text (ekg-note-text note))
+         (cached (gethash id ekg-notes-alive--org-render-cache)))
+    (if (and cached
+             (equal (car cached) text)
+             (eq (car (cdr cached)) ekg-notes-alive--collapse-version))
+        (cddr cached)
+      (let ((rendered (ekg-notes-alive--org-render-text text id)))
+        (puthash id (cons text (cons ekg-notes-alive--collapse-version rendered))
+                 ekg-notes-alive--org-render-cache)
+        rendered))))
+
+(defun ekg-notes-alive--org-render-text (text note-id)
+  "Font-lock TEXT as org, apply headline folding for NOTE-ID.
+Returns the resulting buffer substring including text properties."
+  (with-temp-buffer
+    (require 'org)
+    (org-mode)
+    (insert text)
+    (font-lock-mode 1)
+    (font-lock-ensure)
+    (ekg-notes-alive--org-apply-collapse note-id ekg-notes-alive--collapsed)
+    (buffer-substring (point-min) (point-max))))
+
+(defun ekg-notes-alive--org-apply-collapse (note-id collapsed)
+  "In the current org buffer, hide subtrees of collapsed headlines.
+Headline lines keep their org faces and get `ekg-headline-line',
+click bindings and a fold arrow (▸ folded / ▾ expanded)."
+  (let ((del-lines nil)
+        (skip-depth nil)
+        (ln 0))
+    (goto-char (point-min))
+    (while (not (eobp))
+      (let* ((line-str (buffer-substring (point) (line-end-position)))
+             (m (string-match "^\\(\\*+\\)[ \t]" line-str)))
+        (if m
+            (let ((level (length (match-string 1 line-str)))
+                  (folded (gethash (cons note-id (1+ ln)) collapsed)))
+              (when (and skip-depth (<= level skip-depth))
+                (setq skip-depth nil))
+              (if skip-depth
+                  (push ln del-lines)
+                (ekg-notes-alive--org-headline-add-props (point) (line-end-position)
+                                                         (1+ ln) folded)
+                (when folded (setq skip-depth level))))
+          (when skip-depth (push ln del-lines))))
+      (cl-incf ln)
+      (forward-line 1))
+    ;; Delete from the end so earlier line numbers stay valid.
+    (dolist (line (sort del-lines #'>))
+      (goto-char (point-min))
+      (forward-line line)
+      (delete-region (point) (min (1+ (line-end-position)) (point-max))))))
+
+(defun ekg-notes-alive--org-headline-add-props (beg end ln folded)
+  "Add fold bindings and an arrow to the current buffer headline line."
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'ekg-notes-alive-toggle-headline)
+    (define-key map [mouse-1]
+                (lambda (event)
+                  (interactive "e")
+                  (posn-set-point (event-end event))
+                  (ekg-notes-alive-toggle-headline)))
+    (let ((props (list 'keymap map
+                       'mouse-face 'highlight
+                       'ekg-headline-line ln
+                       'help-echo "RET/左键: 展开/折叠此标题")))
+      (add-text-properties beg end props)
+      (goto-char beg)
+      (insert (propertize (if folded "▸ " "▾ ")
+                          'face '(:foreground "#888888")
+                          'ekg-headline-line ln
+                          'keymap map
+                          'mouse-face 'highlight
+                          'help-echo "RET/左键: 展开/折叠此标题")))))
+
+(defun ekg-notes-alive-toggle-headline ()
+  "Toggle folding of the org headline under point."
+  (interactive nil ekg-notes-mode)
+  (let* ((note-id (get-text-property (point) :ekg-note-id))
+         (ln (get-text-property (point) 'ekg-headline-line)))
+    (when (and note-id ln)
+      (let ((key (cons note-id ln)))
+        (if (gethash key ekg-notes-alive--collapsed)
+            (remhash key ekg-notes-alive--collapsed)
+          (puthash key t ekg-notes-alive--collapsed))
+        (cl-incf ekg-notes-alive--collapse-version)
+        (ekg-notes-refresh)))))
 
 (defun ekg-notes-alive--day-start (time)
   "Return the float second value of the local day containing TIME."
