@@ -75,6 +75,16 @@
 ;; 8. Clickable refs.  `ekg-display-note-reffed' is advised so each
 ;;    ref in the reffed line is clickable (RET / left click) to show
 ;;    all notes referencing that ref.
+;;
+;; 9. Org inline-image workaround.  Org 9.8.10's `org-headline-re' can
+;;    receive a nil level from `org-element--parse-to' (called on a
+;;    non-headline element), producing `(** 1 nil "*")', which rx
+;;    rejects with "rx `**' range error".  Because the call site is
+;;    inlined into org-element.elc, `rx-to-string' is advised instead
+;;    to rewrite invalid `(** MIN MAX ...)' bounds into the equivalent
+;;    "at least MIN" regexp.  Valid bounds pass through untouched, so
+;;    this is a no-op for every other rx user.  With this in place,
+;;    `ekg-notes-display-images' can be safely enabled again.
 
 ;;; Code:
 
@@ -384,6 +394,45 @@ the header line and the database watch are kept in sync afterwards."
     (ekg-notes-alive--ensure-watch)))
 
 (advice-add 'ekg--notes-mount :around #'ekg-notes-alive--mount)
+
+;;; Org 9.8.10 workaround: sanitize `(** ...)' bounds for `rx-to-string'.
+;;
+;; `org-headline-re' (org-macs.el) builds
+;;   `(seq line-start (** 1 ,true-level "*") " ")'
+;; and calls `rx-to-string'.  `org-element--parse-to' (org-element.el)
+;; inlines that call and can pass a non-headline element whose
+;; `:true-level' is nil, producing `(** 1 nil "*")' -- rx's bounded
+;; repetition requires natnump bounds with min <= max, so it signals
+;; "rx `**' range error".  Since the call site is inlined into
+;; org-element.elc, advising `org-headline-re' cannot help; we rewrite
+;; invalid bounds at the `rx-to-string' layer instead.
+
+(defun ekg-notes-alive--rx-fix-bounds (form)
+  "Recursively rewrite invalid `(** MIN MAX ...)' bounds in FORM.
+Valid bounds (natnump MIN and MAX with MIN <= MAX) are kept as-is.
+Invalid ones (MAX nil, non-natural, or < MIN) are rewritten to
+`(>= MIN ITEMS)' -- rx's \"at least MIN\" form, equivalent to the
+intended `\\{MIN,\\}'.  When MIN itself is not a natural number,
+fall back to `(+ ITEMS)'."
+  (cond
+   ((consp form)
+    (if (and (eq (car form) '**) (>= (length form) 3))
+        (let ((min (nth 1 form))
+              (max (nth 2 form))
+              (items (mapcar #'ekg-notes-alive--rx-fix-bounds (cdddr form))))
+          (if (and (natnump min) (natnump max) (<= min max))
+              (cons '** (cons min (cons max items)))
+            (if (natnump min)
+                (cons '>= (cons min items))
+              (cons '+ items))))
+      (mapcar #'ekg-notes-alive--rx-fix-bounds form)))
+   (t form)))
+
+(defun ekg-notes-alive--rx-to-string-bounds (orig form &optional no-group)
+  "Around-advice for `rx-to-string' fixing invalid `(** ...)' bounds."
+  (funcall orig (ekg-notes-alive--rx-fix-bounds form) no-group))
+
+(advice-add 'rx-to-string :around #'ekg-notes-alive--rx-to-string-bounds)
 
 (provide 'ekg-notes-alive)
 ;;; ekg-notes-alive.el ends here
