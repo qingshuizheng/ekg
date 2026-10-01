@@ -63,11 +63,24 @@
 ;;    debounce, reusing the upstream `ekg--refresh-notes-buffers'.
 ;;    This makes e.g. note edits elsewhere or an external writer show
 ;;    up without losing point / scroll.
+;;
+;; 6. Stats header.  The header line additionally shows the number of
+;;    notes in the current list and how many were modified today.
+;;
+;; 7. Time-grouped log view.  `G' toggles between the flat list and a
+;;    view grouped by 今天 / 昨天 / 本周 / 更早 (by modified time),
+;;    with per-group counts.  Group headers carry the id of the first
+;;    note of the group so note navigation keeps working unchanged.
+;;
+;; 8. Clickable refs.  `ekg-display-note-reffed' is advised so each
+;;    ref in the reffed line is clickable (RET / left click) to show
+;;    all notes referencing that ref.
 
 ;;; Code:
 
 (require 'ekg)
 (require 'filenotify)
+(require 'ekg-ref nil t)
 
 (defcustom ekg-notes-alive-auto-refresh t
   "When non-nil, refresh all live `ekg-notes-mode' buffers when the
@@ -90,6 +103,15 @@ current notes buffer.")
 (defvar ekg-notes-alive--refresh-timer nil
   "Pending debounce timer for auto-refresh.")
 
+(defvar-local ekg-notes-alive--group-by nil
+  "When non-nil, render the notes list grouped by modified time.")
+
+(defvar-local ekg-notes-alive--last-count nil
+  "Number of notes in the last successful render of this buffer.")
+
+(defvar-local ekg-notes-alive--last-today nil
+  "Number of notes modified today in the last successful render.")
+
 (defun ekg-notes-alive--db-file ()
   "Return the truename of the current EKG database file."
   (file-truename
@@ -103,6 +125,54 @@ property is contiguous between notes."
   (concat (string-trim-right (ekg-display-note note ekg-display-note-template))
           "\n\n"))
 
+(defun ekg-notes-alive--note-vnode (note)
+  "Return a vui-text vnode for NOTE, with error isolation."
+  (let ((id (ekg-note-id note)))
+    (condition-case err
+        (vui-text (ekg-notes-alive--note-line note)
+          :key (intern (format "note-%s" id))
+          :ekg-note-id id)
+      (error
+       (vui-text (format "[note %s display error: %s]"
+                         id (error-message-string err))
+         :face 'error
+         :key (intern (format "note-%s" id))
+         :ekg-note-id id)))))
+
+(defun ekg-notes-alive--day-start (time)
+  "Return the float second value of the local day containing TIME."
+  (float-time
+   (apply #'encode-time
+          (list 0 0 0 (nth 3 (decode-time time))
+                (nth 4 (decode-time time)) (nth 5 (decode-time time))))))
+
+(defun ekg-notes-alive--grouped-vnodes (notes)
+  "Return NOTE vnodes grouped by modified time, with group headers.
+Group headers carry the `:ekg-note-id' of the first note of the group
+so navigation across the list keeps working."
+  (let* ((today-start (ekg-notes-alive--day-start (current-time)))
+         (yday-start (- today-start 86400.0))
+         (week-start (- today-start 604800.0))
+         (by (make-hash-table :test 'equal)))
+    (dolist (note notes)
+      (let* ((mt (ekg-note-modified-time note))
+             (key (cond ((>= mt today-start) "今天")
+                        ((>= mt yday-start) "昨天")
+                        ((>= mt week-start) "本周")
+                        (t "更早"))))
+        (push note (gethash key by))))
+    (seq-mapcat
+     (lambda (name)
+       (let ((ns (nreverse (gethash name by))))
+         (when ns
+           (cons
+            (vui-text (format "── %s (%d)\n" name (length ns))
+              :key (intern (format "group-%s" name))
+              :face 'bold
+              :ekg-note-id (ekg-note-id (car ns)))
+            (mapcar #'ekg-notes-alive--note-vnode ns)))))
+     '("今天" "昨天" "本周" "更早"))))
+
 (vui-defcomponent ekg-notes-root (name notes-func)
   "Notes list root, redefined by `ekg-notes-alive' for live updates."
   :render
@@ -114,6 +184,12 @@ property is contiguous between notes."
     (if (not fetch-ok)
         (vui-text (format "[ekg-notes-root: fetch notes error: %s]" notes)
           :face 'error)
+      (setq-local ekg-notes-alive--last-count (length notes))
+      (setq-local ekg-notes-alive--last-today
+                  (let ((start (ekg-notes-alive--day-start (current-time))))
+                    (seq-count (lambda (note)
+                                 (>= (ekg-note-modified-time note) start))
+                               notes)))
       (vui-error-boundary
        :id 'ekg-notes-root
        :fallback
@@ -125,19 +201,9 @@ property is contiguous between notes."
        (list
         (apply #'vui-vstack
                :spacing 0
-               (mapcar (lambda (note)
-                         (let ((id (ekg-note-id note)))
-                           (condition-case err
-                               (vui-text (ekg-notes-alive--note-line note)
-                                 :key (intern (format "note-%s" id))
-                                 :ekg-note-id id)
-                             (error
-                              (vui-text (format "[note %s display error: %s]"
-                                                id (error-message-string err))
-                                :face 'error
-                                :key (intern (format "note-%s" id))
-                                :ekg-note-id id)))))
-                       notes)))))))
+               (if ekg-notes-alive--group-by
+                   (ekg-notes-alive--grouped-vnodes notes)
+                 (mapcar #'ekg-notes-alive--note-vnode notes))))))))
 
 (defun ekg-notes-alive--wrap-notes-func (notes-func)
   "Wrap NOTES-FUNC so the current tag filter is applied to its result."
@@ -149,13 +215,18 @@ property is contiguous between notes."
     notes-func))
 
 (defun ekg-notes-alive--update-header ()
-  "Show the active filter in the notes buffer header line."
+  "Show the active filter and note counts in the notes buffer header."
   (when (derived-mode-p 'ekg-notes-mode)
     (let* ((name (or (bound-and-true-p ekg-notes-name) ""))
-           (tag ekg-notes-alive--filter-tag))
+           (tag ekg-notes-alive--filter-tag)
+           (stats (and (integerp ekg-notes-alive--last-count)
+                       (format "  |  %d 条 · 今日 %d"
+                               ekg-notes-alive--last-count
+                               (or ekg-notes-alive--last-today 0))))
+           (base (concat " " name stats)))
       (setq header-line-format
             (if (null tag)
-                (propertize (concat " " name) 'face 'bold)
+                (propertize base 'face 'bold)
               (let ((map (make-sparse-keymap)))
                 (define-key map (kbd "RET") #'ekg-notes-alive-clear-filter)
                 (define-key map [mouse-1]
@@ -163,7 +234,7 @@ property is contiguous between notes."
                               (interactive "e")
                               (posn-set-point (event-end event))
                               (ekg-notes-alive-clear-filter)))
-                (propertize (concat " " name
+                (propertize (concat base
                                     (format "  [filter: %s  × 清除]" tag))
                             'face 'bold
                             'keymap map
@@ -192,6 +263,48 @@ The tag is prompted for, from the tags present in the current list."
 
 (define-key ekg-notes-mode-map "f" #'ekg-notes-alive-set-filter)
 (define-key ekg-notes-mode-map "F" #'ekg-notes-alive-clear-filter)
+
+(defun ekg-notes-alive-toggle-group ()
+  "Toggle the time-grouped log view of the current notes list."
+  (interactive nil ekg-notes-mode)
+  (setq ekg-notes-alive--group-by
+        (if ekg-notes-alive--group-by nil 'time))
+  (ekg-notes-refresh))
+
+(define-key ekg-notes-mode-map "G" #'ekg-notes-alive-toggle-group)
+
+;;; Clickable refs: RET / left click on a ref shows all notes
+;;; referencing it.
+
+(define-advice ekg-display-note-reffed
+    (:around (orig note &optional numwords &rest fmt-args) clickable-refs)
+  (let ((refs (plist-get (ekg-note-properties note) :reffed/ref)))
+    (if (null refs)
+        (apply orig note numwords fmt-args)
+      (ekg-display--format
+       (propertize
+        (concat
+         (mapconcat
+          (lambda (ref)
+            (let ((ref-map (make-sparse-keymap)))
+              (define-key ref-map (kbd "RET")
+                          (lambda ()
+                            (interactive)
+                            (ekg-show-notes-with-any-ref (list ref))))
+              (define-key ref-map [mouse-1]
+                          (lambda (event)
+                            (interactive "e")
+                            (posn-set-point (event-end event))
+                            (ekg-show-notes-with-any-ref (list ref))))
+              (propertize ref
+                          'face 'ekg-ref
+                          'mouse-face 'highlight
+                          'keymap ref-map
+                          'help-echo "RET/左键: 查看引用此 ref 的笔记")))
+          refs ", ")
+         "\n")
+        'face 'ekg-ref 'ekg-ref-line t)
+       numwords fmt-args))))
 
 (defun ekg-notes-alive--schedule-refresh ()
   "Debounce and then refresh all live notes buffers."
