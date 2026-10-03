@@ -2330,7 +2330,17 @@ Text included in inline templates is not searched."
   (ekg-connect)
   (ekg-setup-notes-buffer
    (format "query: %s" query)
-   (lambda () (seq-filter #'ekg-note-active-p (delq nil (mapcar #'ekg-get-note-with-id (triples-fts-query-subject ekg-db query ekg-query-pred-abbrevs))))) nil))
+   (lambda ()
+     (seq-filter
+      (lambda (note)
+        ;; Drop false hits from the FTS index: the index covers all
+        ;; triples, so tags and other non-note subjects whose name
+        ;; contains the query term come back as notes with no text
+        ;; (and no timestamps), which the notes view cannot render.
+        (and (ekg-note-active-p note) (ekg-note-text note)))
+      (delq nil (mapcar #'ekg-get-note-with-id
+                        (triples-fts-query-subject ekg-db query ekg-query-pred-abbrevs)))))
+   nil))
 
 ;;;###autoload
 (defun ekg-show-notes-in-trash ()
