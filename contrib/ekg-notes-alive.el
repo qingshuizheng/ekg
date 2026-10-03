@@ -68,7 +68,7 @@
 ;;    notes in the current list and how many were modified today.
 ;;
 ;; 7. Time-grouped log view.  `G' toggles between the flat list and a
-;;    view grouped by 今天 / 昨天 / 本周 / 更早 (by modified time),
+;;    view grouped by Today / Yesterday / This Week / Earlier (by modified time),
 ;;    with per-group counts.  Group headers carry the id of the first
 ;;    note of the group so note navigation keeps working unchanged.
 ;;
@@ -329,11 +329,11 @@ so navigation across the list keeps working."
          (week-start (- today-start 604800.0))
          (by (make-hash-table :test 'equal)))
     (dolist (note notes)
-      (let* ((mt (ekg-note-modified-time note))
-             (key (cond ((>= mt today-start) "今天")
-                        ((>= mt yday-start) "昨天")
-                        ((>= mt week-start) "本周")
-                        (t "更早"))))
+      (let* ((mt (or (ekg-note-modified-time note) 0))
+             (key (cond ((>= mt today-start) "Today")
+                        ((>= mt yday-start) "Yesterday")
+                        ((>= mt week-start) "This Week")
+                        (t "Earlier"))))
         (push note (gethash key by))))
     (seq-mapcat
      (lambda (name)
@@ -342,7 +342,7 @@ so navigation across the list keeps working."
            (cons
             (ekg-notes-alive--group-header-vnode name ns)
             (mapcar #'ekg-notes-alive--note-vnode ns)))))
-     '("今天" "昨天" "本周" "更早"))))
+     '("Today" "Yesterday" "This Week" "Earlier"))))
 
 (vui-defcomponent ekg-notes-root (name notes-func)
   "Notes list root, redefined by `ekg-notes-alive' for live updates."
@@ -359,7 +359,7 @@ so navigation across the list keeps working."
       (setq-local ekg-notes-alive--last-today
                   (let ((start (ekg-notes-alive--day-start (current-time))))
                     (seq-count (lambda (note)
-                                 (>= (ekg-note-modified-time note) start))
+                                 (>= (or (ekg-note-modified-time note) 0) start))
                                notes)))
       (vui-error-boundary
        :id 'ekg-notes-root
