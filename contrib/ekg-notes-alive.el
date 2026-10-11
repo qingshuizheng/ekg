@@ -226,7 +226,10 @@ user's template choice."
 
 (defun ekg-notes-alive--org-render-text (text note-id)
   "Font-lock TEXT as org, apply headline folding for NOTE-ID.
-Returns the resulting buffer substring including text properties."
+Returns the resulting buffer substring including text properties, marked
+with the `ekg-note-text' property so `z/ekg-note-update-at-point' can
+edit the body (the rich org preview bypasses `ekg-display-note-text',
+which is what normally adds that marker)."
   (with-temp-buffer
     (require 'org)
     (org-mode)
@@ -234,7 +237,8 @@ Returns the resulting buffer substring including text properties."
     (font-lock-mode 1)
     (font-lock-ensure)
     (ekg-notes-alive--org-apply-collapse note-id ekg-notes-alive--collapsed)
-    (buffer-substring (point-min) (point-max))))
+    (propertize (buffer-substring (point-min) (point-max))
+                'ekg-note-text t)))
 
 (defun ekg-notes-alive--org-apply-collapse (note-id collapsed)
   "In the current org buffer, hide subtrees of collapsed headlines.
@@ -447,35 +451,105 @@ The tag is prompted for, from the tags present in the current list."
 ;;; Clickable refs: RET / left click on a ref shows all notes
 ;;; referencing it.
 
+(defun ekg-notes-alive--ref-keymap (ref &optional parent)
+  "Return a keymap binding RET and mouse-1 to show notes with REF.
+PARENT, when it is a keymap, is inherited so line-level bindings (such
+as `u' for `z/ekg-note-update-at-point') keep working on the ref."
+  (let ((map (make-sparse-keymap)))
+    (when (keymapp parent)
+      (set-keymap-parent map parent))
+    (define-key map (kbd "RET")
+                (lambda ()
+                  (interactive)
+                  (ekg-show-notes-with-any-ref (list ref))))
+    (define-key map [mouse-1]
+                (lambda (event)
+                  (interactive "e")
+                  (posn-set-point (event-end event))
+                  (ekg-show-notes-with-any-ref (list ref))))
+    map))
+
+(defun ekg-notes-alive--ref-spans (line refs line-map)
+  "Return ((BEG END KEYMAP) ...) marking each of REFS inside LINE.
+LINE-MAP is inherited by every ref keymap.  A ref that LINE does not
+contain verbatim, because `ekg-display--format' truncated it, is
+skipped."
+  (let ((offset 0)
+        spans)
+    (dolist (ref refs)
+      (when (and (not (string-empty-p ref))
+                 (string-match (regexp-quote ref) line offset))
+        (let ((beg (match-beginning 0))
+              (end (match-end 0)))
+          (push (list beg end (ekg-notes-alive--ref-keymap ref line-map))
+                spans)
+          (setq offset end))))
+    (nreverse spans)))
+
+(defconst ekg-notes-alive--ref-help-echo
+  "RET/左键: 查看引用此 ref 的笔记"
+  "Help echo shown on a clickable ref in the notes list.")
+
+(defun ekg-notes-alive--add-ref-props (beg end keymap &optional object)
+  "Make the text between BEG and END in OBJECT a clickable ref.
+KEYMAP is the ref's keymap, see `ekg-notes-alive--ref-keymap'.  OBJECT
+defaults to the current buffer."
+  (add-text-properties beg end
+                       (list 'face 'ekg-ref
+                             'mouse-face 'highlight
+                             'keymap keymap
+                             'help-echo ekg-notes-alive--ref-help-echo)
+                       object))
+
 (define-advice ekg-display-note-reffed
     (:around (orig note &optional numwords &rest fmt-args) clickable-refs)
+  "Make each ref clickable without dropping the line's edit metadata.
+ORIG's result carries the line-level properties added by other contrib
+modules (the `u' keymap, `ekg-prop-key' and `:ekg-note-id'); rebuilding
+the line from scratch would lose them, leaving
+`z/ekg-note-update-at-point' with no editable region to detect.  The
+per-ref keymaps are therefore layered onto ORIG's own text, and inherit
+ORIG's keymap as parent so line-level bindings keep working.
+
+The spans are also recorded in the `ekg-ref-spans' property so
+`ekg-notes-alive--restore-ref-keymaps' can re-apply them after
+`org-activate-links' has replaced the `keymap' property of URL refs."
   (let ((refs (plist-get (ekg-note-properties note) :reffed/ref)))
     (if (null refs)
         (apply orig note numwords fmt-args)
-      (ekg-display--format
-       (propertize
-        (concat
-         (mapconcat
-          (lambda (ref)
-            (let ((ref-map (make-sparse-keymap)))
-              (define-key ref-map (kbd "RET")
-                          (lambda ()
-                            (interactive)
-                            (ekg-show-notes-with-any-ref (list ref))))
-              (define-key ref-map [mouse-1]
-                          (lambda (event)
-                            (interactive "e")
-                            (posn-set-point (event-end event))
-                            (ekg-show-notes-with-any-ref (list ref))))
-              (propertize ref
-                          'face 'ekg-ref
-                          'mouse-face 'highlight
-                          'keymap ref-map
-                          'help-echo "RET/左键: 查看引用此 ref 的笔记")))
-          refs ", ")
-         "\n")
-        'face 'ekg-ref 'ekg-ref-line t)
-       numwords fmt-args))))
+      (let* ((line (apply orig note numwords fmt-args))
+             (line-map (get-text-property 0 'keymap line))
+             (spans (ekg-notes-alive--ref-spans line refs line-map)))
+        (dolist (span spans)
+          (ekg-notes-alive--add-ref-props (nth 0 span) (nth 1 span)
+                                          (nth 2 span) line))
+        (add-text-properties 0 (length line) (list 'ekg-ref-spans spans) line)
+        line))))
+
+(defun ekg-notes-alive--restore-ref-keymaps ()
+  "Re-apply the per-ref keymaps clobbered by `org-activate-links'.
+`ekg--notes-activate-links' rewrites the `keymap', `mouse-face' and
+`help-echo' properties of every link-like piece of text, so a URL ref
+would no longer jump to the notes referencing it: RET finds no binding
+in the link keymap and falls through to `widget-button-press', whose
+global `newline' binding is rejected by vui's read-only fields, while
+mouse-1 is translated into mouse-2 by the link's `[follow-link]'
+binding and opens the URL instead."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-min))
+      (let ((pos (point-min)))
+        (while (setq pos (text-property-any pos (point-max) 'ekg-ref-line t))
+          (dolist (span (get-text-property pos 'ekg-ref-spans))
+            (let ((beg (+ pos (nth 0 span)))
+                  (end (+ pos (nth 1 span))))
+              (when (<= end (point-max))
+                (ekg-notes-alive--add-ref-props beg end (nth 2 span)))))
+          (setq pos (or (next-single-property-change pos 'ekg-ref-line)
+                        (point-max))))))))
+
+(advice-add 'ekg--notes-activate-links :after
+            #'ekg-notes-alive--restore-ref-keymaps)
 
 (defun ekg-notes-alive--schedule-refresh ()
   "Debounce and then refresh all live notes buffers."
