@@ -54,11 +54,11 @@
                 (setq ekg-db-file db)
                 (let ((note-copy (copy-ekg-note note)))
                   (setf (ekg-note-id note-copy) nil)
-                  (ekg-note-save note-copy)))
+                  (ekg-save-note note-copy)))
             (ekg-close)
             (setq ekg-db-file db0))
           (ekg-note-delete note)
-          (ekg-notes-redisplay)
+          (ekg-notes-refresh)
           (message "已将笔记移动到：%s" (file-name-nondirectory db)))
       (unwind-protect
           (progn
@@ -70,9 +70,9 @@
         (setq ekg-db-file db0))
       (ekg-note-delete ekg-note)
       (kill-buffer (current-buffer))
-      (message "已将笔记移动到：%s" (file-name-nondirectory db))))
-  (z/ekg-db-face-update db0)
-  (ekg--refresh-notes-buffers))
+      (message "已将笔记移动到：%s" (file-name-nondirectory db)))
+    (z/ekg-db-face-update db0)
+    (ekg--refresh-notes-buffers)))
 
 ;; =====================================================================
 ;;; Find and edit notes

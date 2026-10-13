@@ -335,7 +335,10 @@ buffer preview (supports marking individual tags and dry-run)."
                                     (replace-regexp-in-string
                                      (rx (seq bos (literal from-tag))) to-tag
                                      from-subtag)))
-                                from-subtags)))
+                                from-subtags))
+           (counts (mapcar (lambda (from)
+                             (length (plist-get (triples-get-type ekg-db from 'tag) :tagged)))
+                           from-subtags)))
       (let ((selected (z/ekg-tag-rename--confirm
                        from-tag to-tag
                        from-subtags to-subtags
