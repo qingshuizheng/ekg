@@ -111,7 +111,8 @@ non-nil."
 (defun ekg-auto-save-stop-idle-timer ()
   "Stop `ekg-auto-save' idle timer."
   (when ekg-auto-save-idle-timer
-    (cancel-timer ekg-auto-save-idle-timer)))
+    (cancel-timer ekg-auto-save-idle-timer)
+    (setq ekg-auto-save-idle-timer nil)))
 
 
 ;;; Keystroke counter
@@ -176,17 +177,24 @@ After save, reset idle timer and keystroke counter."
     (ekg-auto-save-initialize-idle-timer)
     (setq ekg-auto-save-keystroke-counter 0)))
 
+(defun ekg-auto-save--other-buffer-active-p ()
+  "Return non-nil when a buffer other than the current one auto-saves.
+The advices that `ekg-auto-save-advice-trigger-commands' installs are global,
+so they may only be removed once no buffer is left that wants them.  The
+buffer being killed is still in `buffer-list' while `kill-buffer-hook' runs,
+which is why the current buffer is left out of the count."
+  (seq-some (lambda (buf)
+              (and (not (eq buf (current-buffer)))
+                   (with-current-buffer buf (bound-and-true-p ekg-auto-save-mode))))
+            (buffer-list)))
+
 (defun ekg-auto-save-cleanup-on-buffer-kill ()
   "Do some cleanup on buffer kill.
 Cancel buffer related idle timer, keystroke counter; remove
 advices on commands when there's no editable ekg buffer."
   (ekg-auto-save-stop-idle-timer)
   (remove-hook 'post-self-insert-hook #'ekg-auto-save-after-some-keystrokes t)
-  (unless (seq-some
-           (lambda (buf)
-             (with-current-buffer buf
-               (or ekg-capture-mode ekg-edit-mode)))
-           (buffer-list))
+  (unless (ekg-auto-save--other-buffer-active-p)
     (ekg-auto-save-remove-advice-from-trigger-commands)))
 
 
@@ -212,19 +220,33 @@ advices on commands when there's no editable ekg buffer."
   (remove-hook 'post-self-insert-hook #'ekg-auto-save-after-some-keystrokes t)
   (dolist (hook ekg-auto-save-hook-triggers)
     (remove-hook hook #'ekg-auto-save-func t))
-  (ekg-auto-save-remove-advice-from-trigger-commands)
+  (unless (ekg-auto-save--other-buffer-active-p)
+    (ekg-auto-save-remove-advice-from-trigger-commands))
   (remove-hook 'kill-buffer-hook #'ekg-auto-save-cleanup-on-buffer-kill t))
 
 ;;;###autoload
 (define-minor-mode ekg-auto-save-mode
-  "A minor mode that auto-saves ekg notes."
+  "A minor mode that auto-saves ekg notes.
+
+It belongs in `ekg-capture-mode-hook' and `ekg-edit-mode-hook', where an
+argument-less call turns it on.  A minor mode's hook also runs when the mode
+is *disabled*, so this function has to survive being called from the
+`-off-hook' of `ekg-capture-mode' / `ekg-edit-mode' too: there it only cleans
+up, because the buffer is no longer an ekg one."
   :group 'ekg
   :global nil
-  (unless (or ekg-edit-mode ekg-capture-mode)
-    (user-error "Only available in ekg-capture/edit-mode"))
-  (if ekg-auto-save-mode
-      (ekg-auto-save-initialize)
-    (ekg-auto-save-stop)))
+  (cond
+   ((not ekg-auto-save-mode)
+    (ekg-auto-save-stop))
+   ((or ekg-edit-mode ekg-capture-mode)
+    (ekg-auto-save-initialize))
+   (t
+    ;; Asked for outside an ekg buffer: take the flag back, leave nothing
+    ;; behind, and only complain when a person asked for it.
+    (setq ekg-auto-save-mode nil)
+    (ekg-auto-save-stop)
+    (when (called-interactively-p 'any)
+      (user-error "Only available in ekg-capture/edit-mode")))))
 
 (provide 'ekg-auto-save)
 ;;; ekg-auto-save.el ends here
