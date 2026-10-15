@@ -148,39 +148,46 @@ with NOTE as the argument.
 
 If ERROR-CALLBACK is non-nil use it on error, otherwise log a message."
   (ekg-embedding-connect)
-  (llm-embedding-async
-   ekg-embedding-provider
-   (funcall ekg-embedding-text-selector
-            (substring-no-properties
-             (ekg-display-note-text note ekg-embedding-max-words 'plaintext)))
-   (lambda (embedding)
-     (ekg-connect)
-     (if ekg-vecdb-provider
-         (ekg-embedding-batch-store-vecdb (list (ekg-embedding--note-to-embed-item note embedding)))
-       (ekg-embedding-batch-store (list (cons (ekg-note-id note) embedding))))
-     (when success-callback (funcall success-callback note)))
-   (or error-callback
-       (lambda (error-type msg)
-         (message "ekg-embedding: error %s: %s" error-type msg)))))
+  ;; See `ekg-embedding-generate-for-note-sync' for why empty notes are skipped.
+  (if (= 0 (length (or (ekg-note-text note) "")))
+      (when success-callback (funcall success-callback note))
+    (llm-embedding-async
+     ekg-embedding-provider
+     (funcall ekg-embedding-text-selector
+              (substring-no-properties
+               (ekg-display-note-text note ekg-embedding-max-words 'plaintext)))
+     (lambda (embedding)
+       (ekg-connect)
+       (if ekg-vecdb-provider
+           (ekg-embedding-batch-store-vecdb (list (ekg-embedding--note-to-embed-item note embedding)))
+         (ekg-embedding-batch-store (list (cons (ekg-note-id note) embedding))))
+       (when success-callback (funcall success-callback note)))
+     (or error-callback
+         (lambda (error-type msg)
+           (message "ekg-embedding: error %s: %s" error-type msg))))))
 
 (defun ekg-embedding-generate-for-note-sync (note)
   "Calculate and set the embedding for NOTE.
 The embedding is calculated synchronously, and the caller will
 wait for the embedding to return and be set."
   (ekg-embedding-connect)
-  (let ((embedding (llm-embedding
-                    ekg-embedding-provider
-                    (funcall ekg-embedding-text-selector
-                             (substring-no-properties
-                              (ekg-display-note-text note ekg-embedding-max-words 'plaintext))))))
-    (if (ekg-embedding-valid-p embedding)
+  ;; A note without text has nothing to embed, and an empty input comes back
+  ;; with no embedding at all (Ollama returns an empty array), which used to
+  ;; surface as "Args out of range: [], 0".
+  (when (> (length (or (ekg-note-text note) "")) 0)
+    (let ((embedding (llm-embedding
+                      ekg-embedding-provider
+                      (funcall ekg-embedding-text-selector
+                               (substring-no-properties
+                                (ekg-display-note-text note ekg-embedding-max-words 'plaintext))))))
+      (if (ekg-embedding-valid-p embedding)
         (if ekg-vecdb-provider
             (ekg-embedding-batch-store
              (list (ekg-embedding--note-to-embed-item note embedding)))
           (triples-set-type ekg-db (ekg-note-id note) 'embedding
                             :embedding embedding))
-      (lwarn '(ekg embedding-generation) :error "Invalid and unusable embedding generated from llm-embedding of note %s: %S"
-             (ekg-note-id note) embedding))))
+        (lwarn '(ekg embedding-generation) :error "Invalid and unusable embedding generated from llm-embedding of note %s: %S"
+               (ekg-note-id note) embedding)))))
 
 (defun ekg-embedding-batch-store (items)
   "Store a batch of ITEMS in the sqlite database.
@@ -199,12 +206,21 @@ ITEMS is a list of conses of the form (NOTE-ID . EMBEDDING)."
   "Generate embeddings for NOTES in a batch.
 SUCCESS-CALLBACK is called with the size of the batch after the batch is
 finished.
-ERROR-CALLBACK is called with ERROR-TYPE and message on errors."
-  (let ((texts (mapcar (lambda (note)
-                         (funcall ekg-embedding-text-selector
-                                  (substring-no-properties
-                                   (ekg-display-note-text note ekg-embedding-max-words 'plaintext))))
-                       notes)))
+ERROR-CALLBACK is called with ERROR-TYPE and message on errors.
+
+Notes without text are dropped before the request: the model only returns
+vectors for the inputs it embedded, so keeping an empty input would silently
+shorten the list of stored embeddings.  The callbacks still report the original
+size, which is what `ekg-embedding-generate-all' counts."
+  (let* ((batch-size (length notes))
+         (notes (seq-filter (lambda (note)
+                              (> (length (or (ekg-note-text note) "")) 0))
+                            notes))
+         (texts (mapcar (lambda (note)
+                          (funcall ekg-embedding-text-selector
+                                   (substring-no-properties
+                                    (ekg-display-note-text note ekg-embedding-max-words 'plaintext))))
+                        notes)))
     (llm-batch-embeddings-async
      ekg-embedding-provider
      texts
@@ -216,13 +232,13 @@ ERROR-CALLBACK is called with ERROR-TYPE and message on errors."
                     collect (ekg-embedding--note-to-embed-item note embedding) into items
                     finally
                     (ekg-embedding-batch-store-vecdb items)
-                    (when success-callback (funcall success-callback (length notes))))
+                    (when success-callback (funcall success-callback batch-size)))
          (cl-loop for note in notes
                   for embedding in embeddings
                   collect (cons (ekg-note-id note) embedding) into items
                   finally
                   (ekg-embedding-batch-store items)
-                  (when success-callback (funcall success-callback (length notes))))))
+                  (when success-callback (funcall success-callback batch-size)))))
      error-callback)))
 
 (defun ekg-embedding-generate-for-note-tags-delayed (note)
