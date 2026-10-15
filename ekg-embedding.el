@@ -275,9 +275,17 @@ NOTE is the note to create an embedding for."
 (defun ekg-embedding-refresh-tag-embedding (tag)
   "Refresh the embedding for TAG.
 The embedding for TAG is recomputed by averaging all the
-embeddings of notes with the given tag."
+embeddings of notes with the given tag.
+
+Notes with no text are skipped, and notes that cannot be embedded are only
+counted, then reported once at the end.  This is called from the idle timer in
+`ekg-embedding-generate-for-note-tags-delayed', where warning about each note
+would pop up the *Warnings* buffer -- and displaying that buffer runs timers,
+which re-enters the timer that is already running."
   (condition-case err
-      (let ((embeddings
+      (let* ((fixed 0)
+             (unfixable 0)
+             (embeddings
              (cl-loop for tagged in
                       (plist-get (triples-get-type ekg-db tag 'tag) :tagged)
                       for note = (ekg-get-note-with-id tagged)
@@ -286,18 +294,24 @@ embeddings of notes with the given tag."
                       collect
                       (let ((embedding (ekg-embedding-get tagged)))
                         (unless (ekg-embedding-valid-p embedding)
-                          (message "ekg-embedding: invalid embedding for note %s, attempting to fix" tagged)
-                          (condition-case nil
-                              (progn
-                                (ekg-embedding-generate-for-note-sync note)
-                                (let ((new-embedding (ekg-embedding-note-get note)))
-                                  (when (ekg-embedding-valid-p new-embedding)
-                                    (ekg-save-note note)
-                                    (setf embedding new-embedding))))
-                            (error nil))
-                          (unless (ekg-embedding-valid-p embedding)
-                            (warn "Ekg-embedding: could not fix invalid embedding for note %s, skipping" tagged)))
+                          (if (= 0 (length (or (ekg-note-text note) "")))
+                              ;; An empty input has no embedding; nothing to repair.
+                              (cl-incf unfixable)
+                            (condition-case nil
+                                (progn
+                                  (ekg-embedding-generate-for-note-sync note)
+                                  (let ((new-embedding (ekg-embedding-note-get note)))
+                                    (when (ekg-embedding-valid-p new-embedding)
+                                      (ekg-save-note note)
+                                      (setf embedding new-embedding)
+                                      (cl-incf fixed))))
+                              (error nil))
+                            (unless (ekg-embedding-valid-p embedding)
+                              (cl-incf unfixable))))
                         embedding))))
+        (when (> unfixable 0)
+          (message "ekg-embedding: %d note(s) tagged %s have no usable embedding%s"
+                   unfixable tag (if (> fixed 0) (format " (%d repaired)" fixed) "")))
         (let ((avg (ekg-embedding-average
                     (seq-filter #'ekg-embedding-valid-p embeddings))))
           (if (ekg-embedding-valid-p avg)
