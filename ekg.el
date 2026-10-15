@@ -3118,10 +3118,15 @@ Returns a list of matching notes, up to LIMIT if provided."
 
 (defun ekg-inactive-note-ids ()
   "Get a list of ekg-note objects, representing all inactive notes.
-Inactive in this context means trashed or draft note."
+Inactive in this context means trashed or draft note.
+
+A nil `ekg-draft-tag' or `ekg-trash-tag' is skipped: looking up the tag type
+of a nil subject matches every note instead, which would make every note look
+inactive -- and with it `ekg-active-note-ids', `ekg-embedding-generate-all'
+and every similarity search would come up empty."
   (mapcan (lambda (tag)
             (plist-get (triples-get-type ekg-db tag 'tag) :tagged))
-          (list ekg-draft-tag ekg-trash-tag)))
+          (delq nil (list ekg-draft-tag ekg-trash-tag))))
 
 (defun ekg-active-note-ids ()
   "Get a list of ekg-note objects, representing all active notes.
