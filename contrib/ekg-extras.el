@@ -545,14 +545,18 @@ against buffer names."
            (update-fn (intern (format "z/ekg-note-update-%s" name-suf)))
            (display-func (intern (format "ekg-display-note-%s" type-suf)))
            (kw (intern (concat ":" raw))))
-      (unless (fboundp update-fn)
-        (fset update-fn `(lambda (&optional v)
-                           (interactive nil ekg-capture-mode ekg-edit-mode ekg-notes-mode)
-                           (,(if tag-p 'z/ekg-note--tags-op 'z/ekg-note--prop-op)
-                            ,@(unless tag-p (list kw))
-                            v)))
-        (put update-fn 'function-documentation
-             (format "专属 %s 属性批量更新命令，一次性增删改。" (capitalize name-suf))))
+      ;; Define the command unconditionally.  `fboundp' can already be true for a
+      ;; *stub*: `transient-patches' (and similar guards) install an erroring
+      ;; `defalias' for commands that are not yet defined when a transient layout
+      ;; is built, and this generator used to skip the real definition because of
+      ;; it, leaving the stub in place for good.
+      (fset update-fn `(lambda (&optional v)
+                         (interactive nil ekg-capture-mode ekg-edit-mode ekg-notes-mode)
+                         (,(if tag-p 'z/ekg-note--tags-op 'z/ekg-note--prop-op)
+                          ,@(unless tag-p (list kw))
+                          v)))
+      (put update-fn 'function-documentation
+           (format "专属 %s 属性批量更新命令，一次性增删改。" (capitalize name-suf)))
       (unless tag-p
         (when (fboundp display-func)
           (advice-add display-func :around
