@@ -697,6 +697,20 @@ EXCLUDE-IDS."
     (setf (ekg-note-creation-time note) creation-time
           (ekg-note-modified-time note) modified-time)))
 
+(defun ekg-apple-notes--strip-title-line (text name)
+  "Drop a leading line of TEXT when it merely repeats NAME.
+An Apple Note's body always begins with its title, which is the same string as
+the note's `name', so importing the body as-is put the title into the note text a
+second time.  Apple Notes may also leave a pandoc hard-break (`\\\\') at the end of
+that first line, so it is ignored when comparing."
+  (let* ((name (and name (string-trim name)))
+         (lines (and text (split-string text "\n")))
+         (first (and lines (string-trim
+                            (replace-regexp-in-string "\\\\\\\\[ \t]*\\'" "" (car lines))))))
+    (if (and name (not (string-empty-p name)) first (string= first name))
+        (string-trim (string-join (cdr lines) "\n"))
+      text)))
+
 (defun ekg-apple-notes--import-note (apple-note)
   "Import a single APPLE-NOTE into ekg.
 APPLE-NOTE is an `ekg-apple-notes--note' struct.
@@ -712,7 +726,9 @@ Return the ekg note ID if a note was created or updated."
          (resource (ekg-apple-notes--parse-resource-from-body body))
          (tags (ekg-apple-notes--parse-tags-from-body body))
          (mode ekg-capture-default-mode)
-         (text (ekg-apple-notes--from-html body mode)))
+         (text (ekg-apple-notes--strip-title-line
+                (ekg-apple-notes--from-html body mode)
+                (ekg-apple-notes--note-name apple-note))))
     (when (and exported-id
                existing-note-p
                (not (ekg-apple-notes--get-ekg-id apple-id)))
