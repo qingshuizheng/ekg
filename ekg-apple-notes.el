@@ -85,6 +85,13 @@ variables if `ekg-agent' is loaded."
            (when (boundp 'ekg-agent-self-info-tag)
              (list (symbol-value 'ekg-agent-self-info-tag))))))
 
+(setq ekg-header-hidden-properties
+      (append ekg-header-hidden-properties
+              (list :apple-notes/note-id
+                    :apple-notes/last-export
+                    :apple-notes/last-import
+                    :apple-notes/folder)))
+
 ;;; ---- Schema ----
 
 (defun ekg-apple-notes-add-schema ()
@@ -412,6 +419,14 @@ end tell"
 
 ;;; ---- Tag Conversion ----
 
+(defconst ekg-apple-notes--tag-line-prefix "[Tt][Aa][Gg][Ss]? *[:：] *"
+  "Prefix of a tag line in an Apple Note.
+Matched case-insensitively (`Tags:', `TAG:', `tags :' all work) and with either a
+half- or full-width colon.")
+
+(defconst ekg-apple-notes--tag-separator "[,，]"
+  "Separator between several tags on one line: a half- or full-width comma.")
+
 (defun ekg-apple-notes--tags-to-metadata (tags)
   "Convert a list of ekg TAGS to metadata lines for the note body.
 Hidden tags are excluded.  Each tag gets its own \"Tag: <tag>\" line."
@@ -421,21 +436,30 @@ Hidden tags are excluded.  Each tag gets its own \"Tag: <tag>\" line."
                  visible-tags "\n"))))
 
 (defun ekg-apple-notes--parse-tags-from-body (body)
-  "Parse \"Tag: <tag>\" lines from BODY.
-Returns a list of tag strings.  Each tag occupies its own line in
-the format \"Tag: <tag>\", possibly wrapped in HTML div elements."
-  (let ((tags nil))
+  "Parse tag lines from BODY and return a list of tag strings.
+A tag line is `Tags?' (any case, half- or full-width colon) followed by one or
+more tags separated by `,' or `，', possibly wrapped in HTML div elements."
+  (let ((tags nil)
+        (case-fold-search t))
     (with-temp-buffer
       (insert body)
       (goto-char (point-min))
       (while (re-search-forward
-              "\\(?:<div>\\)?Tag: \\([^<\n]+?\\)\\(?:</div>\\|$\\)" nil t)
-        (push (string-trim (match-string 1)) tags)))
+              (concat "\\(?:^\\|<div>\\)" ekg-apple-notes--tag-line-prefix
+                      "\\([^<\n]+?\\)\\(?:</div>\\|$\\)")
+              nil t)
+        (dolist (tag (split-string (match-string 1)
+                                   ekg-apple-notes--tag-separator t "[ \t]+"))
+          (setq tag (string-trim tag))
+          (unless (string-empty-p tag)
+            (push tag tags)))))
     (nreverse tags)))
 
 (defun ekg-apple-notes--remove-tags-line (text)
-  "Remove \"Tag: <tag>\" lines from TEXT."
-  (replace-regexp-in-string "\\(?:\n\\)?Tag: [^\n]+" "" text))
+  "Remove tag lines from TEXT."
+  (let ((case-fold-search t))
+    (replace-regexp-in-string
+     (concat "\\(?:\n\\)?" ekg-apple-notes--tag-line-prefix "[^\n]+") "" text)))
 
 (defun ekg-apple-notes--parse-resource-from-body (body)
   "Parse a \"Resource: <url>\" line from BODY.
@@ -452,14 +476,16 @@ Returns the resource string, or nil if not found."
     html))
 
 (defun ekg-apple-notes--remove-tags-html (html)
-  "Remove \"Tag: <tag>\" divs and their preceding spacer from HTML.
-This should be called before pandoc conversion to avoid artifacts."
-  (let ((html (replace-regexp-in-string
-               "<div><br></div>\n?\\(?:<div>Tag: [^<]*</div>\n?\\)+"
-               "" html)))
+  "Remove tag-line divs and their preceding spacer from HTML.
+This should be called before pandoc conversion to avoid artifacts.  The lines are
+recognized the same way `ekg-apple-notes--parse-tags-from-body' does."
+  (let* ((case-fold-search t)
+         (div (concat "<div>" ekg-apple-notes--tag-line-prefix "[^<]*</div>\n?"))
+         (html (replace-regexp-in-string
+                (concat "<div><br></div>\n?\\(?:" div "\\)+")
+                "" html)))
     ;; Handle case where there's no spacer div.
-    (replace-regexp-in-string
-     "<div>Tag: [^<]*</div>\n?" "" html)))
+    (replace-regexp-in-string div "" html)))
 
 ;;; ---- Hierarchy Metadata ----
 
@@ -558,7 +584,17 @@ markdown format [text](url)."
          (hierarchy-meta (ekg-apple-notes--hierarchy-to-metadata note))
          (metadata (string-join (delq nil (list tags-meta hierarchy-meta))
                                 "\n")))
-    (concat (when (ekg-should-show-id-p (ekg-note-id note))
+    (concat
+            ;; Apple Notes' title *is* the body's first line, so it has to be part
+            ;; of the body; otherwise updating a note would rename it to whatever
+            ;; its first line happens to be, and a created note's title would not
+            ;; survive the next round trip.  The import strips this line again when
+            ;; it matches the note's `name'.
+            (let ((title (ekg-apple-notes--note-title note)))
+              (when (and title (not (string-empty-p (string-trim title))))
+                (format "<div>%s</div>\n<div><br></div>\n"
+                        (string-trim title))))
+            (when (ekg-should-show-id-p (ekg-note-id note))
               (format "<div>Resource: %s</div>\n<div><br></div>\n"
                       (ekg-note-id note)))
             html
@@ -577,17 +613,20 @@ Does not handle nested brackets or parentheses in link text or URLs."
    text))
 
 (defun ekg-apple-notes--normalize-divs (html)
-  "Convert <div> wrappers to <p> in HTML.
-Apple Notes wraps every line in <div> tags, which pandoc passes
-through as raw HTML when converting to markdown.  Converting to
-<p> gives pandoc proper paragraph structure to work with.
-Also strips trailing <br> inside divs, which Apple Notes adds
-when users edit notes and which pandoc would convert to
-backslash line breaks."
+  "Clean up the HTML Apple Notes hands over before pandoc sees it.
+Apple Notes wraps every line in `<div>', which pandoc passes through as raw HTML,
+so they become `<p>' for proper paragraph structure.  It also adds `<br>' at the
+end of lines and of blocks; those would turn into org hard breaks (`\\\\') or
+markdown line breaks, so they are dropped.  `</li>', `</p>' and `</ul>' are handled
+along with `</div>' since Apple Notes puts the stray `<br>' there too."
   (let ((html (replace-regexp-in-string "<div><br></div>" "" html)))
-    (setq html (replace-regexp-in-string "<br ?/?>\\(</div>\\)" "\\1" html))
+    (setq html (replace-regexp-in-string
+                "<br ?/?>\\(</div>\\|</li>\\|</p>\\|</ul>\\)" "\\1" html))
+    (setq html (replace-regexp-in-string
+                "<br ?/?>\\([ \t\\n]*\\)\\'" "\\1" html))
     (setq html (replace-regexp-in-string "<div>" "<p>" html))
     (replace-regexp-in-string "</div>" "</p>" html)))
+
 
 (defun ekg-apple-notes--from-html (body mode)
   "Convert Apple Notes BODY (HTML) to text in MODE.
@@ -698,25 +737,46 @@ EXCLUDE-IDS."
           (ekg-note-modified-time note) modified-time)))
 
 (defun ekg-apple-notes--strip-title-line (text name)
-  "Drop a leading line of TEXT when it merely repeats NAME.
-An Apple Note's body always begins with its title, which is the same string as
-the note's `name', so importing the body as-is put the title into the note text a
-second time.  Apple Notes may also leave a pandoc hard-break (`\\\\') at the end of
-that first line, so it is ignored when comparing."
-  (let* ((name (and name (string-trim name)))
-         (lines (and text (split-string text "\n")))
-         (first (and lines (string-trim
-                            (replace-regexp-in-string "\\\\\\\\[ \t]*\\'" "" (car lines))))))
-    (if (and name (not (string-empty-p name)) first (string= first name))
-        (string-trim (string-join (cdr lines) "\n"))
-      text)))
+  "Drop leading lines of TEXT that merely repeat NAME.
+An Apple Note's body begins with its own title -- and can begin with several
+copies of it after a few syncs -- so every leading line that matches NAME is
+dropped, along with the blank lines between them.  A trailing pandoc hard break
+on such a line is ignored when comparing."
+  (let ((name (and name (string-trim name))))
+    (if (or (null name) (string-empty-p name))
+        text
+      (let ((lines (split-string text "\n"))
+            (done nil))
+        (while (and (not done) lines)
+          (let ((first (string-trim
+                        (replace-regexp-in-string "\\\\[ \t]*\\'" "" (car lines)))))
+            (if (or (string-empty-p first) (string= first name))
+                (setq lines (cdr lines))
+              (setq done t))))
+        (string-trim (string-join lines "\n"))))))
+
+
+
+(defun ekg-apple-notes--strip-inline-markup (html)
+  "Remove inline markup wrappers from HTML.
+Apple Notes wraps a whole line in a `<span style=\"...\">' as soon as it carries
+any style, and `<b>/<i>/<u>/<strong>/<em>/<font>/<code>' show up too.  Those
+wrappers sit between the block element and the text, so the tag and metadata
+parsers miss the line.  Block structure (`<div>', `<p>', `<ul>', `<br>') is kept."
+  (let ((inline "span\\|b\\|i\\|u\\|strong\\|em\\|font\\|code"))
+    (setq html (replace-regexp-in-string
+                (concat "<\\(?:" inline "\\)\\(?:[ \t][^>]*\\)?>") "" html))
+    (replace-regexp-in-string
+     (concat "</\\(?:" inline "\\)>") "" html)))
 
 (defun ekg-apple-notes--import-note (apple-note)
   "Import a single APPLE-NOTE into ekg.
-APPLE-NOTE is an `ekg-apple-notes--note' struct.
+APPLE-NOTE is an `ekg-apple-notes--note' struct.  Whether it should be imported at
+all is decided beforehand by `ekg-apple-notes--should-import-note-p'.
 Return the ekg note ID if a note was created or updated."
   (let* ((apple-id (ekg-apple-notes--note-id apple-note))
-         (body (ekg-apple-notes--note-body apple-note))
+         (body (ekg-apple-notes--strip-inline-markup
+                (ekg-apple-notes--note-body apple-note)))
          (hierarchy (ekg-apple-notes--hierarchy-from-body body))
          (exported-id (plist-get hierarchy :id))
          (ekg-id (or (ekg-apple-notes--get-ekg-id apple-id)
@@ -726,34 +786,37 @@ Return the ekg note ID if a note was created or updated."
          (resource (ekg-apple-notes--parse-resource-from-body body))
          (tags (ekg-apple-notes--parse-tags-from-body body))
          (mode ekg-capture-default-mode)
+         (name (ekg-apple-notes--note-name apple-note))
+         ;; The Apple note's `name' is its title.  Store it as the ekg title, and
+         ;; only drop the body's first line when that line repeats it -- if the
+         ;; two differ, both are kept.
+         (title-props (when (and name (not (string-empty-p (string-trim name))))
+                        (list :titled/title (list (string-trim name)))))
          (text (ekg-apple-notes--strip-title-line
                 (ekg-apple-notes--from-html body mode)
-                (ekg-apple-notes--note-name apple-note))))
+                name)))
     (when (and exported-id
                existing-note-p
                (not (ekg-apple-notes--get-ekg-id apple-id)))
       (ekg-apple-notes--set-apple-id exported-id apple-id))
     (if existing-note-p
-        ;; Existing note — only import if modified after our last export.
-        (let ((mod-time (ekg-apple-notes--parse-iso-time
-                         (ekg-apple-notes--note-modification-date apple-note)))
-              (last-export (ekg-apple-notes--get-last-export)))
-          (if (<= mod-time last-export)
-              nil ;; Modified by our export, not externally.
-            (let ((note (ekg-get-note-with-id ekg-id)))
-              (when note
-                (setf (ekg-note-text note) text)
-                (when tags
-                  (setf (ekg-note-tags note) tags))
-                (ekg-save-note note)
-                (ekg-apple-notes--apply-apple-times note apple-note)
-                (when hierarchy
-                  (push (cons (ekg-note-id note)
-                              (plist-get hierarchy :parent-id))
-                        ekg-apple-notes--pending-parent-relations))
-                (message "ekg-apple-notes: updated ekg note from Apple Notes %s"
-                         apple-id)
-                (ekg-note-id note)))))
+        (let ((note (ekg-get-note-with-id ekg-id)))
+          (when note
+            (setf (ekg-note-text note) text)
+            (when tags
+              (setf (ekg-note-tags note) tags))
+            (when title-props
+              (triples-set-type ekg-db (ekg-note-id note) 'titled
+                                :title (plist-get title-props :titled/title)))
+            (ekg-save-note note)
+            (ekg-apple-notes--apply-apple-times note apple-note)
+            (when hierarchy
+              (push (cons (ekg-note-id note)
+                          (plist-get hierarchy :parent-id))
+                    ekg-apple-notes--pending-parent-relations))
+            (message "ekg-apple-notes: updated ekg note from Apple Notes %s"
+                     apple-id)
+            (ekg-note-id note)))
       ;; New note from Apple Notes — skip if tags match exclusions.
       (unless (seq-intersection (or tags '("imported"))
                                 (ekg-apple-notes--exclude-tags))
@@ -761,6 +824,7 @@ Return the ekg note ID if a note was created or updated."
                      :text text
                      :mode mode
                      :tags (or tags '("imported"))
+                     :properties title-props
                      :id (or exported-id resource))))
           (ekg-save-note note)
           (ekg-apple-notes--apply-apple-times note apple-note)
@@ -772,6 +836,7 @@ Return the ekg note ID if a note was created or updated."
           (message "ekg-apple-notes: imported new note from Apple Notes %s"
                    apple-id)
           (ekg-note-id note))))))
+
 
 (defun ekg-apple-notes--apply-imported-hierarchy (relations)
   "Apply imported child-parent RELATIONS after all notes are saved."
@@ -787,29 +852,25 @@ Return the ekg note ID if a note was created or updated."
         (ekg-note-set-parent note parent-id)
         (ekg-save-note note))))))
 
-(defun ekg-apple-notes--should-import-note-p (apple-note last-import)
-  "Return non-nil if APPLE-NOTE should be considered for import.
-LAST-IMPORT is the previous import watermark.  Apple Notes may
-deliver notes from iCloud after a sync with their original, older
-modification time, so unmapped Apple Notes must be considered even
-when their modification time is older than LAST-IMPORT."
-  (or (not (ekg-apple-notes--get-ekg-id
-            (ekg-apple-notes--note-id apple-note)))
-      (>= (ekg-apple-notes--parse-iso-time
-           (ekg-apple-notes--note-modification-date apple-note))
-          last-import)))
+(defun ekg-apple-notes--should-import-note-p (apple-note &optional force)
+  "Return non-nil if APPLE-NOTE should be imported into ekg.
+The single place that decides it, for the import loop and for fetching the body:
+an unmapped note is always imported, a mapped one only when it changed after our
+last export (by definition an external change), and FORCE imports everything,
+body included.
 
-(defun ekg-apple-notes--needs-body-for-import-p (apple-note)
-  "Return non-nil if APPLE-NOTE needs its body fetched for import.
-Mapped notes at or before the last export were modified by our
-own export, so `ekg-apple-notes--import-note' would skip them
-without using the body."
-  (let ((ekg-id (ekg-apple-notes--get-ekg-id
-                 (ekg-apple-notes--note-id apple-note))))
-    (or (not ekg-id)
-        (> (ekg-apple-notes--parse-iso-time
-            (ekg-apple-notes--note-modification-date apple-note))
-           (ekg-apple-notes--get-last-export)))))
+Unmapped notes are deliberately not filtered by date: Apple Notes may hand over
+notes from iCloud with their original, older modification time."
+  (or force
+      (let ((ekg-id (ekg-apple-notes--get-ekg-id
+                     (ekg-apple-notes--note-id apple-note))))
+        (or (null ekg-id)
+            (> (ekg-apple-notes--parse-iso-time
+                (ekg-apple-notes--note-modification-date apple-note))
+               (ekg-apple-notes--get-last-export))))))
+
+
+
 
 (defun ekg-apple-notes-import (&optional force)
   "Import new and modified notes from Apple Notes into ekg.
@@ -820,19 +881,24 @@ import."
   (ekg-apple-notes-connect)
   (let* ((last-import (ekg-apple-notes--get-last-import))
          (start-time (current-time))
-         (apple-notes (ekg-apple-notes--list-notes
-                       :since (unless force last-import)))
+         ;; List every note's metadata, never filtered by the watermark: asking
+         ;; Apple Notes only for notes modified since LAST-IMPORT silently skipped
+         ;; notes that are newer than the last mapping but older than the
+         ;; watermark -- e.g. notes typed right before an import, or notes whose
+         ;; older modification time arrives from iCloud.  Metadata is cheap; the
+         ;; bodies are still fetched per note, and `--should-import-note-p'
+         ;; decides what actually gets imported.
+         (apple-notes (ekg-apple-notes--list-notes))
          (count 0)
          (ekg-apple-notes--pending-parent-relations nil)
          imported-ids)
     (message "ekg-apple-notes: checking %d notes in Apple Notes folder"
              (length apple-notes))
     (dolist (an apple-notes)
-      (when (ekg-apple-notes--should-import-note-p an last-import)
+      (when (ekg-apple-notes--should-import-note-p an force)
         (condition-case err
-            (let ((imported-id (and (ekg-apple-notes--needs-body-for-import-p an)
-                                    (ekg-apple-notes--import-note
-                                     (ekg-apple-notes--ensure-note-body an)))))
+            (let ((imported-id (ekg-apple-notes--import-note
+                                (ekg-apple-notes--ensure-note-body an))))
               (when imported-id
                 (push imported-id imported-ids)
                 (cl-incf count)))
