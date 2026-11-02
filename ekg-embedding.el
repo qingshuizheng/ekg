@@ -148,39 +148,46 @@ with NOTE as the argument.
 
 If ERROR-CALLBACK is non-nil use it on error, otherwise log a message."
   (ekg-embedding-connect)
-  (llm-embedding-async
-   ekg-embedding-provider
-   (funcall ekg-embedding-text-selector
-            (substring-no-properties
-             (ekg-display-note-text note ekg-embedding-max-words 'plaintext)))
-   (lambda (embedding)
-     (ekg-connect)
-     (if ekg-vecdb-provider
-         (ekg-embedding-batch-store-vecdb (list (ekg-embedding--note-to-embed-item note embedding)))
-       (ekg-embedding-batch-store (list (cons (ekg-note-id note) embedding))))
-     (when success-callback (funcall success-callback note)))
-   (or error-callback
-       (lambda (error-type msg)
-         (message "ekg-embedding: error %s: %s" error-type msg)))))
+  ;; See `ekg-embedding-generate-for-note-sync' for why empty notes are skipped.
+  (if (not (ekg-embedding--embeddable-text-p (ekg-note-text note)))
+      (when success-callback (funcall success-callback note))
+    (llm-embedding-async
+     ekg-embedding-provider
+     (funcall ekg-embedding-text-selector
+              (substring-no-properties
+               (ekg-display-note-text note ekg-embedding-max-words 'plaintext)))
+     (lambda (embedding)
+       (ekg-connect)
+       (if ekg-vecdb-provider
+           (ekg-embedding-batch-store-vecdb (list (ekg-embedding--note-to-embed-item note embedding)))
+         (ekg-embedding-batch-store (list (cons (ekg-note-id note) embedding))))
+       (when success-callback (funcall success-callback note)))
+     (or error-callback
+         (lambda (error-type msg)
+           (message "ekg-embedding: error %s: %s" error-type msg))))))
 
 (defun ekg-embedding-generate-for-note-sync (note)
   "Calculate and set the embedding for NOTE.
 The embedding is calculated synchronously, and the caller will
 wait for the embedding to return and be set."
   (ekg-embedding-connect)
-  (let ((embedding (llm-embedding
-                    ekg-embedding-provider
-                    (funcall ekg-embedding-text-selector
-                             (substring-no-properties
-                              (ekg-display-note-text note ekg-embedding-max-words 'plaintext))))))
-    (if (ekg-embedding-valid-p embedding)
+  ;; A note without text has nothing to embed, and an empty input comes back
+  ;; with no embedding at all (Ollama returns an empty array), which used to
+  ;; surface as "Args out of range: [], 0".
+  (when (ekg-embedding--embeddable-text-p (ekg-note-text note))
+    (let ((embedding (llm-embedding
+                      ekg-embedding-provider
+                      (funcall ekg-embedding-text-selector
+                               (substring-no-properties
+                                (ekg-display-note-text note ekg-embedding-max-words 'plaintext))))))
+      (if (ekg-embedding-valid-p embedding)
         (if ekg-vecdb-provider
             (ekg-embedding-batch-store-vecdb
              (list (ekg-embedding--note-to-embed-item note embedding)))
           (triples-set-type ekg-db (ekg-note-id note) 'embedding
                             :embedding embedding))
-      (lwarn '(ekg embedding-generation) :error "Invalid and unusable embedding generated from llm-embedding of note %s: %S"
-             (ekg-note-id note) embedding))))
+        (lwarn '(ekg embedding-generation) :error "Invalid and unusable embedding generated from llm-embedding of note %s: %S"
+               (ekg-note-id note) embedding)))))
 
 (defun ekg-embedding-batch-store (items)
   "Store a batch of ITEMS in the sqlite database.
@@ -199,12 +206,21 @@ ITEMS is a list of conses of the form (NOTE-ID . EMBEDDING)."
   "Generate embeddings for NOTES in a batch.
 SUCCESS-CALLBACK is called with the size of the batch after the batch is
 finished.
-ERROR-CALLBACK is called with ERROR-TYPE and message on errors."
-  (let ((texts (mapcar (lambda (note)
-                         (funcall ekg-embedding-text-selector
-                                  (substring-no-properties
-                                   (ekg-display-note-text note ekg-embedding-max-words 'plaintext))))
-                       notes)))
+ERROR-CALLBACK is called with ERROR-TYPE and message on errors.
+
+Notes without text are dropped before the request: the model only returns
+vectors for the inputs it embedded, so keeping an empty input would silently
+shorten the list of stored embeddings.  The callbacks still report the original
+size, which is what `ekg-embedding-generate-all' counts."
+  (let* ((batch-size (length notes))
+         (notes (seq-filter (lambda (note)
+                              (ekg-embedding--embeddable-text-p (ekg-note-text note)))
+                            notes))
+         (texts (mapcar (lambda (note)
+                          (funcall ekg-embedding-text-selector
+                                   (substring-no-properties
+                                    (ekg-display-note-text note ekg-embedding-max-words 'plaintext))))
+                        notes)))
     (llm-batch-embeddings-async
      ekg-embedding-provider
      texts
@@ -216,13 +232,13 @@ ERROR-CALLBACK is called with ERROR-TYPE and message on errors."
                     collect (ekg-embedding--note-to-embed-item note embedding) into items
                     finally
                     (ekg-embedding-batch-store-vecdb items)
-                    (when success-callback (funcall success-callback (length notes))))
+                    (when success-callback (funcall success-callback batch-size)))
          (cl-loop for note in notes
                   for embedding in embeddings
                   collect (cons (ekg-note-id note) embedding) into items
                   finally
                   (ekg-embedding-batch-store items)
-                  (when success-callback (funcall success-callback (length notes))))))
+                  (when success-callback (funcall success-callback batch-size)))))
      error-callback)))
 
 (defun ekg-embedding-generate-for-note-tags-delayed (note)
@@ -243,6 +259,15 @@ NOTE is the note to create an embedding for."
            (ekg-embedding-refresh-tag-embedding tag)))
 
 
+(defun ekg-embedding--embeddable-text-p (text)
+  "Return non-nil if TEXT has something an embedding model can embed.
+A non-empty string is not enough: Ollama answers an empty `embeddings' array
+for input that tokenizes to nothing (whitespace, punctuation or emoji only),
+and `llm' then reads `(aref [] 0)' and signals `args-out-of-range'."
+  (and (stringp text)
+       (not (string-empty-p (string-trim text)))
+       (string-match-p "[[:word:]]" text)))
+
 (defun ekg-embedding-note-get (note)
   "Get the already store embedding for NOTE."
   (ekg-embedding-get (ekg-note-id note)))
@@ -259,9 +284,17 @@ NOTE is the note to create an embedding for."
 (defun ekg-embedding-refresh-tag-embedding (tag)
   "Refresh the embedding for TAG.
 The embedding for TAG is recomputed by averaging all the
-embeddings of notes with the given tag."
+embeddings of notes with the given tag.
+
+Notes with no text are skipped, and notes that cannot be embedded are only
+counted, then reported once at the end.  This is called from the idle timer in
+`ekg-embedding-generate-for-note-tags-delayed', where warning about each note
+would pop up the *Warnings* buffer -- and displaying that buffer runs timers,
+which re-enters the timer that is already running."
   (condition-case err
-      (let ((embeddings
+      (let* ((fixed 0)
+             (unfixable 0)
+             (embeddings
              (cl-loop for tagged in
                       (plist-get (triples-get-type ekg-db tag 'tag) :tagged)
                       for note = (ekg-get-note-with-id tagged)
@@ -270,18 +303,24 @@ embeddings of notes with the given tag."
                       collect
                       (let ((embedding (ekg-embedding-get tagged)))
                         (unless (ekg-embedding-valid-p embedding)
-                          (message "ekg-embedding: invalid embedding for note %s, attempting to fix" tagged)
-                          (condition-case nil
-                              (progn
-                                (ekg-embedding-generate-for-note-sync note)
-                                (let ((new-embedding (ekg-embedding-note-get note)))
-                                  (when (ekg-embedding-valid-p new-embedding)
-                                    (ekg-save-note note)
-                                    (setf embedding new-embedding))))
-                            (error nil))
-                          (unless (ekg-embedding-valid-p embedding)
-                            (warn "Ekg-embedding: could not fix invalid embedding for note %s, skipping" tagged)))
+                          (if (not (ekg-embedding--embeddable-text-p (ekg-note-text note)))
+                              ;; An empty input has no embedding; nothing to repair.
+                              (cl-incf unfixable)
+                            (condition-case nil
+                                (progn
+                                  (ekg-embedding-generate-for-note-sync note)
+                                  (let ((new-embedding (ekg-embedding-note-get note)))
+                                    (when (ekg-embedding-valid-p new-embedding)
+                                      (ekg-save-note note)
+                                      (setf embedding new-embedding)
+                                      (cl-incf fixed))))
+                              (error nil))
+                            (unless (ekg-embedding-valid-p embedding)
+                              (cl-incf unfixable))))
                         embedding))))
+        (when (> unfixable 0)
+          (message "ekg-embedding: %d note(s) tagged %s have no usable embedding%s"
+                   unfixable tag (if (> fixed 0) (format " (%d repaired)" fixed) "")))
         (let ((avg (ekg-embedding-average
                     (seq-filter #'ekg-embedding-valid-p embeddings))))
           (if (ekg-embedding-valid-p avg)
@@ -502,6 +541,8 @@ The results are in order of most similar to least similar."
   "Show similar notes to the TEXT in a new buffer."
   (interactive "MSearch: ")
   (ekg-embedding-connect)
+  (unless (ekg-embedding--embeddable-text-p text)
+    (user-error "Nothing to embed in %S" text))
   (ekg-setup-notes-buffer
    (format "similar to \"%s\"" text)
    (lambda () (delq nil
@@ -514,6 +555,9 @@ The results are in order of most similar to least similar."
   "Show similar notes to the text in the current buffer."
   (interactive)
   (ekg-embedding-connect)
+  (unless (ekg-embedding--embeddable-text-p
+           (funcall ekg-embedding-text-selector (substring-no-properties (buffer-string))))
+    (user-error "Nothing to embed in buffer %s" (buffer-name)))
   (ekg-setup-notes-buffer
    (format "similar to buffer \"%s\"" (buffer-name (current-buffer)))
    (lambda () (delq nil
