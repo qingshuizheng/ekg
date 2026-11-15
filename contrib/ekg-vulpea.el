@@ -37,6 +37,11 @@
 ;; consistent at every point: un-migrated notes follow the file, migrated
 ;; ones follow ekg.
 ;;
+;; Journal files are the one exception (`ekg-vulpea-journal-paths'): a day
+;; file's time headings are sections, not notes, so only the file-level note
+;; is mirrored and every property drawer is stripped from it.  The rest of
+;; the corpus keeps one mirror per note, heading notes included.
+;;
 ;;   M-x ekg-vulpea-sync           incremental sync (C-u re-reads all text)
 ;;   M-x ekg-vulpea-show-mirrors   view of the notes not migrated yet
 ;;   M-x ekg-vulpea-promote        migrate the note at point (C-u also
@@ -129,6 +134,19 @@ extractor time to update its own database first."
 because every note is loaded one by one, so the default view shows
 the most recently modified files and a prefix argument shows all."
   :type 'integer)
+
+(defcustom ekg-vulpea-journal-paths '("/journal/")
+  "Regexps matching the vulpea files treated as journal entries.
+A journal file is one note per day: its time headings are sections,
+not separate notes, so only the file-level note is mirrored.  Every
+property drawer is stripped from that note's text, which also keeps a
+heading's UUID out of the day note's body; otherwise looking the UUID
+up would match both notes.
+
+Files outside these paths keep one mirror per note, heading notes
+included.  Set this to nil to mirror journal headings and keep their
+drawers."
+  :type '(repeat regexp))
 
 (defcustom ekg-vulpea-backup-on-first-import t
   "When non-nil, back up ekg before the first import of a database.
@@ -230,35 +248,58 @@ otherwise disappear from every default view after being mirrored."
   "Return non-nil when NOTE is still backed by a vulpea file."
   (equal (ekg-vulpea-state note) ekg-vulpea--state-mirror))
 
-(defun ekg-vulpea--clean-text (text)
+(defun ekg-vulpea--journal-p (note)
+  "Return non-nil when NOTE's file matches `ekg-vulpea-journal-paths'."
+  (let ((path (vulpea-note-path note)))
+    (and path
+         (seq-some (lambda (regexp) (string-match-p regexp path))
+                   ekg-vulpea-journal-paths))))
+
+(defun ekg-vulpea--ignored-note-p (note)
+  "Return non-nil for a journal heading, which is not mirrored.
+The day's file-level note already contains it, and journal headings
+are sections rather than notes."
+  (and (> (or (vulpea-note-level note) 0) 0)
+       (ekg-vulpea--journal-p note)))
+
+(defun ekg-vulpea--strip-all-drawers-p (note)
+  "Return non-nil when NOTE's file should lose every property drawer."
+  (ekg-vulpea--journal-p note))
+
+(defun ekg-vulpea--strip-drawers (text)
+  "Remove every `:PROPERTIES: ... :END:' block from TEXT."
+  (replace-regexp-in-string
+   "^[ \t]*:PROPERTIES:\n\\(?:[^\n]*\n\\)*?[ \t]*:END:\n?" "" text))
+
+(defun ekg-vulpea--clean-text (text &optional all-drawers)
   "Strip the leading `:PROPERTIES: ... :END:' drawer from TEXT.
 The drawer holds the org ID and bookkeeping properties; ekg already
 shows the ID and title separately and the drawer only eats preview
-space."
-  (if (string-match "\\`:PROPERTIES:\n\\(?:[^\n]*\n\\)*?:END:\n?" text)
-      (substring text (match-end 0))
-    text))
+space.  With ALL-DRAWERS, remove every such drawer, not just the
+leading one (see `ekg-vulpea-strip-drawer-paths')."
+  (let ((text (if all-drawers (ekg-vulpea--strip-drawers text) text)))
+    (if (string-match "\\`:PROPERTIES:\n\\(?:[^\n]*\n\\)*?:END:\n?" text)
+        (substring text (match-end 0))
+      text)))
 
 (defun ekg-vulpea--note-text (note)
   "Return NOTE's body from the current file buffer.
 Level-0 notes take the whole file; heading notes take their subtree.
 The buffer must already contain the file, and be in `org-mode' when
 NOTE is a heading (level > 0)."
-  (let ((pos (max 1 (or (vulpea-note-pos note) 1))))
-    (if (and (> (or (vulpea-note-level note) 0) 0)
-             (<= pos (point-max)))
-        (condition-case nil
-            (progn
-              (goto-char pos)
-              (save-restriction
-                (org-narrow-to-subtree)
-                (ekg-vulpea--clean-text
+  (let* ((pos (max 1 (or (vulpea-note-pos note) 1)))
+         (text (if (and (> (or (vulpea-note-level note) 0) 0)
+                        (<= pos (point-max)))
+                   (condition-case nil
+                       (progn
+                         (goto-char pos)
+                         (save-restriction
+                           (org-narrow-to-subtree)
+                           (buffer-substring-no-properties (point-min) (point-max))))
+                     (error
+                      (buffer-substring-no-properties (point-min) (point-max))))
                  (buffer-substring-no-properties (point-min) (point-max)))))
-          (error
-           (ekg-vulpea--clean-text
-            (buffer-substring-no-properties (point-min) (point-max)))))
-      (ekg-vulpea--clean-text
-       (buffer-substring-no-properties (point-min) (point-max))))))
+    (ekg-vulpea--clean-text text (ekg-vulpea--strip-all-drawers-p note))))
 
 (defun ekg-vulpea--write-mirror (note text mtime)
   "Store NOTE as an ekg mirror of TEXT, whose file was modified at MTIME.
@@ -340,9 +381,15 @@ FORCE means re-read the text even when the stored mtime is current."
 (defun ekg-vulpea--sync-file (file notes seen seen-files force)
   "Mirror NOTES, which all live in FILE.
 SEEN and SEEN-FILES are updated so `ekg-vulpea--prune' can tell
-which mirrors are genuinely stale."
+which mirrors are genuinely stale.  Journal headings are skipped when
+the file has a level-0 note; a journal file without one keeps its
+headings mirrored, since they are then the only visible part."
   (condition-case err
-      (let ((mtime (ekg-vulpea--file-mtime file)))
+      (let* ((mtime (ekg-vulpea--file-mtime file))
+             (has-file-note
+              (seq-some (lambda (note)
+                          (zerop (or (vulpea-note-level note) 0)))
+                        notes)))
         (puthash (expand-file-name file) t seen-files)
         (with-temp-buffer
           (insert-file-contents file)
@@ -353,8 +400,10 @@ which mirrors are genuinely stale."
             ;; import that touches thousands of files.
             (delay-mode-hooks (org-mode)))
           (dolist (note notes)
-            (puthash (vulpea-note-id note) t seen)
-            (ekg-vulpea--sync-note note mtime force))))
+            (if (and has-file-note (ekg-vulpea--ignored-note-p note))
+                (ekg-vulpea--count 'ignored)
+              (puthash (vulpea-note-id note) t seen)
+              (ekg-vulpea--sync-note note mtime force)))))
     (error
      (ekg-vulpea--count 'failed)
      (message "ekg-vulpea: skipped %s: %s" file (error-message-string err)))))
@@ -416,12 +465,13 @@ backup first (see `ekg-vulpea-backup-on-first-import')."
             (message "ekg-vulpea: %d/%d files..." i (length by-file)))))
       (ekg-vulpea--prune seen seen-files)
       (ekg--refresh-notes-buffers)
-      (message "ekg-vulpea: %d created, %d updated, %d unchanged, %d migrated, %d trashed, %d removed, %d failed"
+      (message "ekg-vulpea: %d created, %d updated, %d unchanged, %d migrated, %d trashed, %d ignored, %d removed, %d failed"
                (gethash 'created ekg-vulpea--counts 0)
                (gethash 'updated ekg-vulpea--counts 0)
                (gethash 'unchanged ekg-vulpea--counts 0)
                (gethash 'migrated ekg-vulpea--counts 0)
                (gethash 'trashed ekg-vulpea--counts 0)
+               (gethash 'ignored ekg-vulpea--counts 0)
                (gethash 'removed ekg-vulpea--counts 0)
                (gethash 'failed ekg-vulpea--counts 0))
       nil)))
