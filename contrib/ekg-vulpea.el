@@ -79,8 +79,10 @@
 (defvar vulpea-db-sync-directories)
 (defvar org-directory)
 
+(declare-function vulpea-db-get-by-id "vulpea-db-query")
 (declare-function vulpea-db-query "vulpea-db-query")
 (declare-function vulpea-db-query-by-file-path "vulpea-db-query")
+(declare-function vulpea-db-query-by-links-some "vulpea-db-query")
 (declare-function vulpea-note-id "vulpea-note")
 (declare-function vulpea-note-level "vulpea-note")
 (declare-function vulpea-note-path "vulpea-note")
@@ -705,19 +707,49 @@ it."
                  remaining file)
       (ekg-vulpea--archive-file file))))
 
+(defun ekg-vulpea--backlinks (note)
+  "Return the vulpea notes that link to NOTE, or nil.
+Only notes with a vulpea source are checked, and only vulpea's link
+index is consulted; links written in ekg-native notes are not scanned."
+  (when (and (plist-get (ekg-note-properties note) :vulpea/file)
+             (require 'vulpea-db-query nil t))
+    (let ((id (ekg-note-id note)))
+      (when (ignore-errors (vulpea-db-get-by-id id))
+        (ignore-errors (vulpea-db-query-by-links-some (list id)))))))
+
+(defun ekg-vulpea--backlink-summary (notes)
+  "Return a short list of NOTES' titles for a prompt."
+  (let ((titles (mapcar (lambda (note)
+                          (or (vulpea-note-title note) "untitled"))
+                        (seq-take notes 3))))
+    (concat (mapconcat #'identity titles ", ")
+            (if (> (length notes) 3)
+                (format " and %d more" (- (length notes) 3))
+              ""))))
+
 ;;;###autoload
 (defun ekg-vulpea-discard (&optional arg)
   "Remove the note at point from ekg and never mirror it again.
 The vulpea file is left untouched, so `ekg-vulpea-undiscard' can bring
-the note back.  With a prefix argument, skip the confirmation."
+the note back.  Before asking, vulpea's backlinks to the note are
+collected and shown; a note that is still referenced deserves a second
+look.  With a prefix argument, skip both the confirmation and the
+backlink check."
   (interactive "P")
   (ekg-vulpea--ensure-schema)
   (let* ((note (ekg-current-note-or-error-expanded))
          (id (ekg-note-id note))
-         (title (car (plist-get (ekg-note-properties note) :titled/title))))
+         (title (car (plist-get (ekg-note-properties note) :titled/title)))
+         (backlinks (unless arg (ekg-vulpea--backlinks note))))
     (when (or arg
-              (y-or-n-p (format "Discard %s from ekg? The vulpea file stays. "
-                                (or title (format "%s" id)))))
+              (y-or-n-p
+               (format "Discard %s from ekg? The vulpea file stays.%s "
+                       (or title (format "%s" id))
+                       (if backlinks
+                           (format " %d note(s) link to it: %s."
+                                   (length backlinks)
+                                   (ekg-vulpea--backlink-summary backlinks))
+                         ""))))
       (ekg-vulpea--set-discarded-ids
        (cons id (delete id (ekg-vulpea--discarded-ids))))
       (ekg-note-delete-by-id id)
