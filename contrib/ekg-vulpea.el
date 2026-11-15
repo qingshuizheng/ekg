@@ -175,6 +175,10 @@ add or update a handful of notes and do not force one."
                         '(pos :base/unique t :base/type integer)
                         '(level :base/unique t :base/type integer)
                         '(mtime :base/unique t :base/type integer))
+    ;; Notes explicitly excluded from mirroring.  A dedicated type keeps
+    ;; them out of every note view while surviving restarts.
+    (triples-add-schema ekg-db 'vulpea-settings
+                        '(discarded :base/type string))
     ;; `ekg-note-cotypes' consults this to decide which types belong to a note;
     ;; without it `:vulpea/*' properties never make it back into a note struct.
     (triples-set-type ekg-db 'vulpea 'ekg-note-type)
@@ -185,7 +189,8 @@ add or update a handful of notes and do not force one."
 (defun ekg-vulpea--ensure-schema ()
   "Connect to ekg and make sure the vulpea schema exists."
   (ekg-connect)
-  (unless (eq ekg-vulpea--schema-db ekg-db)
+  (unless (and (eq ekg-vulpea--schema-db ekg-db)
+               (triples-get-type ekg-db 'vulpea-settings 'schema))
     (ekg-vulpea--add-schema)
     (setq ekg-vulpea--schema-db ekg-db)))
 
@@ -335,6 +340,29 @@ read-only mirror."
 
 ;;; Sync
 
+(defconst ekg-vulpea--settings-subject 'vulpea-config
+  "Subject holding vulpea settings that are not tied to a note.")
+
+(defun ekg-vulpea--discarded-ids ()
+  "Return the IDs explicitly excluded from mirroring."
+  (or (plist-get (triples-get-type ekg-db ekg-vulpea--settings-subject
+                                  'vulpea-settings)
+                 :discarded)
+      '()))
+
+(defun ekg-vulpea--set-discarded-ids (ids)
+  "Store IDS as the set of notes excluded from mirroring."
+  (triples-remove-type ekg-db ekg-vulpea--settings-subject 'vulpea-settings)
+  (when ids
+    (triples-set-type ekg-db ekg-vulpea--settings-subject 'vulpea-settings
+                      :discarded ids)))
+
+(defun ekg-vulpea--discarded-hash ()
+  "Return a hash table of the discarded IDs."
+  (let ((hash (make-hash-table :test #'equal)))
+    (dolist (id (ekg-vulpea--discarded-ids)) (puthash id t hash))
+    hash))
+
 (defvar ekg-vulpea--counts nil
   "Hash of sync counters, dynamically bound by `ekg-vulpea-sync'.")
 
@@ -378,11 +406,12 @@ FORCE means re-read the text even when the stored mtime is current."
       (ekg-vulpea--write-mirror note (ekg-vulpea--note-text note) mtime)
       (ekg-vulpea--count (if existing 'updated 'created))))))
 
-(defun ekg-vulpea--sync-file (file notes seen seen-files force)
+(defun ekg-vulpea--sync-file (file notes seen seen-files force discarded)
   "Mirror NOTES, which all live in FILE.
 SEEN and SEEN-FILES are updated so `ekg-vulpea--prune' can tell
-which mirrors are genuinely stale.  Journal headings are skipped when
-the file has a level-0 note; a journal file without one keeps its
+which mirrors are genuinely stale.  DISCARDED is a hash of note IDs
+that must never be mirrored.  Journal headings are skipped when the
+file has a level-0 note; a journal file without one keeps its
 headings mirrored, since they are then the only visible part."
   (condition-case err
       (let* ((mtime (ekg-vulpea--file-mtime file))
@@ -400,10 +429,15 @@ headings mirrored, since they are then the only visible part."
             ;; import that touches thousands of files.
             (delay-mode-hooks (org-mode)))
           (dolist (note notes)
-            (if (and has-file-note (ekg-vulpea--ignored-note-p note))
-                (ekg-vulpea--count 'ignored)
-              (puthash (vulpea-note-id note) t seen)
-              (ekg-vulpea--sync-note note mtime force)))))
+            (let ((id (vulpea-note-id note)))
+              (cond
+               ((gethash id discarded)
+                (ekg-vulpea--count 'discarded))
+               ((and has-file-note (ekg-vulpea--ignored-note-p note))
+                (ekg-vulpea--count 'ignored))
+               (t
+                (puthash id t seen)
+                (ekg-vulpea--sync-note note mtime force)))))))
     (error
      (ekg-vulpea--count 'failed)
      (message "ekg-vulpea: skipped %s: %s" file (error-message-string err)))))
@@ -465,24 +499,26 @@ backup first (see `ekg-vulpea-backup-on-first-import')."
     (let* ((by-file (seq-group-by #'vulpea-note-path notes))
            (seen (make-hash-table :test #'equal))
            (seen-files (make-hash-table :test #'equal))
+           (discarded (ekg-vulpea--discarded-hash))
            (ekg-vulpea--counts (make-hash-table)))
       (message "ekg-vulpea: mirroring %d notes from %d files..."
                (length notes) (length by-file))
       (let ((i 0))
         (dolist (entry by-file)
-          (ekg-vulpea--sync-file (car entry) (cdr entry) seen seen-files force)
+          (ekg-vulpea--sync-file (car entry) (cdr entry) seen seen-files force discarded)
           (cl-incf i)
           (when (zerop (% i 200))
             (message "ekg-vulpea: %d/%d files..." i (length by-file)))))
       (ekg-vulpea--prune seen seen-files)
       (ekg-vulpea--refresh-views)
-      (message "ekg-vulpea: %d created, %d updated, %d unchanged, %d migrated, %d trashed, %d ignored, %d removed, %d failed"
+      (message "ekg-vulpea: %d created, %d updated, %d unchanged, %d migrated, %d trashed, %d ignored, %d discarded, %d removed, %d failed"
                (gethash 'created ekg-vulpea--counts 0)
                (gethash 'updated ekg-vulpea--counts 0)
                (gethash 'unchanged ekg-vulpea--counts 0)
                (gethash 'migrated ekg-vulpea--counts 0)
                (gethash 'trashed ekg-vulpea--counts 0)
                (gethash 'ignored ekg-vulpea--counts 0)
+               (gethash 'discarded ekg-vulpea--counts 0)
                (gethash 'removed ekg-vulpea--counts 0)
                (gethash 'failed ekg-vulpea--counts 0))
       nil)))
@@ -497,7 +533,8 @@ view of vulpea's database is not evidence that a note is gone."
     (when (and files (fboundp 'vulpea-db-query-by-file-path))
       (require 'vulpea)
       (ekg-vulpea--ensure-schema)
-      (let ((ekg-vulpea--counts (make-hash-table)))
+      (let ((ekg-vulpea--counts (make-hash-table))
+            (discarded (ekg-vulpea--discarded-hash)))
         (dolist (file files)
           (when (file-exists-p file)
             (condition-case err
@@ -505,7 +542,7 @@ view of vulpea's database is not evidence that a note is gone."
                  file (vulpea-db-query-by-file-path file)
                  (make-hash-table :test #'equal)
                  (make-hash-table :test #'equal)
-                 nil)
+                 nil discarded)
               (error
                (message "ekg-vulpea: skipped %s: %s" file
                         (error-message-string err))))))))))
@@ -613,12 +650,13 @@ A hidden directory is used so vulpea stops indexing the file."
   "Re-index the vulpea notes in FILE without messages."
   (require 'vulpea)
   (let ((inhibit-message t)
-        (ekg-vulpea--counts (make-hash-table)))
+        (ekg-vulpea--counts (make-hash-table))
+        (discarded (ekg-vulpea--discarded-hash)))
     (ekg-vulpea--sync-file
      file (vulpea-db-query-by-file-path file)
      (make-hash-table :test #'equal)
      (make-hash-table :test #'equal)
-     nil)))
+     nil discarded)))
 
 ;;;###autoload
 (defun ekg-vulpea-promote (&optional archive)
@@ -666,6 +704,61 @@ it."
         (message "ekg-vulpea: %d un-migrated note(s) still in %s; not archiving"
                  remaining file)
       (ekg-vulpea--archive-file file))))
+
+;;;###autoload
+(defun ekg-vulpea-discard (&optional arg)
+  "Remove the note at point from ekg and never mirror it again.
+The vulpea file is left untouched, so `ekg-vulpea-undiscard' can bring
+the note back.  With a prefix argument, skip the confirmation."
+  (interactive "P")
+  (ekg-vulpea--ensure-schema)
+  (let* ((note (ekg-current-note-or-error-expanded))
+         (id (ekg-note-id note))
+         (title (car (plist-get (ekg-note-properties note) :titled/title))))
+    (when (or arg
+              (y-or-n-p (format "Discard %s from ekg? The vulpea file stays. "
+                                (or title (format "%s" id)))))
+      (ekg-vulpea--set-discarded-ids
+       (cons id (delete id (ekg-vulpea--discarded-ids))))
+      (ekg-note-delete-by-id id)
+      (ekg-vulpea--refresh-views)
+      (message "ekg-vulpea: discarded %s (vulpea file untouched)" id))))
+
+;;;###autoload
+(defun ekg-vulpea-undiscard (&optional id)
+  "Bring a discarded note back into the mirror index.
+Prompts with the discarded notes' titles when vulpea knows them; the
+note's file is re-indexed so it reappears immediately."
+  (interactive
+   (progn
+     (require 'vulpea)
+     (require 'vulpea-db-query)
+     (ekg-vulpea--ensure-schema)
+     (let* ((ids (ekg-vulpea--discarded-ids))
+            (choices
+             (mapcar (lambda (id)
+                       (let ((note (ignore-errors (vulpea-db-get-by-id id))))
+                         (cons (format "%s (%s)"
+                                       (if note (vulpea-note-title note) "?")
+                                       id)
+                               id)))
+                     ids)))
+       (unless choices (user-error "No discarded notes"))
+       (list (cdr (assoc (completing-read "Undiscard: " choices nil t) choices))))))
+  (ekg-vulpea--ensure-schema)
+  (ekg-vulpea--set-discarded-ids (delete id (ekg-vulpea--discarded-ids)))
+  (require 'vulpea)
+  (require 'vulpea-db-query)
+  (let ((note (ignore-errors (vulpea-db-get-by-id id))))
+    (if (and note
+             (vulpea-note-path note)
+             (file-exists-p (vulpea-note-path note)))
+        (ekg-vulpea--sync-file-quietly (vulpea-note-path note))
+      ;; The note may have been re-indexed out of vulpea's database, or the
+      ;; database may not know it yet: fall back to a full sync.
+      (ekg-vulpea-sync)))
+  (ekg-vulpea--refresh-views)
+  (message "ekg-vulpea: undiscarded %s" id))
 
 (defun ekg-vulpea--recent-mirror-notes (limit)
   "Return up to LIMIT un-migrated mirrors, most recently modified first.
