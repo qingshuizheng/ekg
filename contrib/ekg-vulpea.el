@@ -408,6 +408,17 @@ headings mirrored, since they are then the only visible part."
      (ekg-vulpea--count 'failed)
      (message "ekg-vulpea: skipped %s: %s" file (error-message-string err)))))
 
+(defun ekg-vulpea--refresh-views ()
+  "Redraw the ekg notes buffers, ignoring a view that cannot be redrawn.
+A view whose fetched notes were just deleted may still hold one of them
+in its render state; that must not turn a successful sync into an
+error."
+  (condition-case err
+      (ekg--refresh-notes-buffers)
+    (error
+     (message "ekg-vulpea: could not redraw an ekg view: %s"
+              (error-message-string err)))))
+
 (defun ekg-vulpea--prune (seen seen-files)
   "Delete mirrors whose vulpea source is gone.
 SEEN holds the note IDs present in vulpea, SEEN-FILES the files this
@@ -464,7 +475,7 @@ backup first (see `ekg-vulpea-backup-on-first-import')."
           (when (zerop (% i 200))
             (message "ekg-vulpea: %d/%d files..." i (length by-file)))))
       (ekg-vulpea--prune seen seen-files)
-      (ekg--refresh-notes-buffers)
+      (ekg-vulpea--refresh-views)
       (message "ekg-vulpea: %d created, %d updated, %d unchanged, %d migrated, %d trashed, %d ignored, %d removed, %d failed"
                (gethash 'created ekg-vulpea--counts 0)
                (gethash 'updated ekg-vulpea--counts 0)
@@ -640,7 +651,7 @@ it."
       (ekg-save-note note)
       (when archive
         (ekg-vulpea--maybe-archive file)))
-    (ekg--refresh-notes-buffers)
+    (ekg-vulpea--refresh-views)
     (message "ekg-vulpea: promoted %s" (ekg-note-id note))))
 
 (defun ekg-vulpea--maybe-archive (file)

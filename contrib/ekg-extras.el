@@ -269,10 +269,14 @@ Excludes special tags like trash and draft."
             (ekg-setup-notes-buffer
              (format "TAGS (hierarchy, all): %s" (ekg-tags-display tags))
              (lambda ()
-               (sort (mapcar #'ekg-get-note-with-id
-                             (seq-reduce #'seq-intersection
-                                         (cdr ids-by-tag-list)
-                                         (car ids-by-tag-list)))
+               ;; A note can be deleted between building the ID list and
+               ;; refreshing this view; `ekg-get-note-with-id' then returns
+               ;; nil, which `ekg-sort-by-creation-time' cannot sort.
+               (sort (delq nil
+                           (mapcar #'ekg-get-note-with-id
+                                   (seq-reduce #'seq-intersection
+                                               (cdr ids-by-tag-list)
+                                               (car ids-by-tag-list))))
                      #'ekg-sort-by-creation-time))
              nil))))
     (error (user-error "层级标签交集筛选失败: %s" (error-message-string err)))))
