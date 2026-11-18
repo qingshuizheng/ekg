@@ -103,6 +103,98 @@ One vocabulary (`org-todo-keywords'), one tag shape
                            kw))))
       (setq-default org-todo-keywords original))))
 
+(ekg-deftest-with-db z/ekg-global-delete-tag--bare-and-prefix ()
+  "Deleting a tag removes it from every note, and a prefix takes its children too.
+Renaming to an empty string used to leave an empty tag behind, which is why this
+command exists at all."
+  (require 'ekg-tags-renaming)
+  (let ((a (ekg-note-create :text "甲" :tags '("slip-box" "doc")))
+        (b (ekg-note-create :text "乙" :tags '("slip-box/sub" "keep"))))
+    (ekg-save-note a)
+    (ekg-save-note b)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+              ((symbol-function 'ekg-backup) #'ignore)
+              ((symbol-function 'ekg--refresh-notes-buffers) #'ignore))
+      (z/ekg-global-delete-tag "slip-box" t))
+    (should (equal (ekg-note-tags (ekg-get-note-with-id (ekg-note-id a))) '("doc")))
+    (should (equal (ekg-note-tags (ekg-get-note-with-id (ekg-note-id b))) '("keep")))
+    (should-not (z/ekg-tags-get-hierarchy-tags "slip-box"))))
+
+(ekg-deftest-with-db z/ekg-global-rename-tag--empty-target-deletes ()
+  "An empty TO-TAG means delete, not rename to an empty string."
+  (require 'ekg-tags-renaming)
+  (let ((a (ekg-note-create :text "甲" :tags '("slip-box" "doc"))))
+    (ekg-save-note a)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+              ((symbol-function 'ekg-backup) #'ignore)
+              ((symbol-function 'ekg--refresh-notes-buffers) #'ignore))
+      (z/ekg-global-rename-tag "slip-box" ""))
+    (should (equal (ekg-note-tags (ekg-get-note-with-id (ekg-note-id a))) '("doc")))
+    (should-not (z/ekg-tags-get-hierarchy-tags "slip-box"))))
+
+(ekg-deftest-with-db z/ekg-global-rename-tag-enhanced--empty-target-deletes ()
+  "The enhanced rename takes the same empty target as a delete.
+Its own preview/confirm buffer must not run at all: the advice intercepts before it."
+  (require 'ekg-tags-renaming)
+  (let ((a (ekg-note-create :text "甲" :tags '("slip-box" "doc")))
+        (b (ekg-note-create :text "乙" :tags '("slip-box/sub" "keep")))
+        (confirm-called nil))
+    (ekg-save-note a)
+    (ekg-save-note b)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+              ((symbol-function 'ekg-backup) #'ignore)
+              ((symbol-function 'ekg--refresh-notes-buffers) #'ignore)
+              ((symbol-function 'z/ekg-tag-rename--confirm)
+               (lambda (&rest _) (setq confirm-called t) nil)))
+      (z/ekg-global-rename-tag-enhanced "slip-box" ""))
+    (should-not confirm-called)
+    (should (equal (ekg-note-tags (ekg-get-note-with-id (ekg-note-id a))) '("doc")))
+    (should (equal (ekg-note-tags (ekg-get-note-with-id (ekg-note-id b))) '("keep")))
+    (should-not (z/ekg-tags-get-hierarchy-tags "slip-box"))))
+
+;;; `lisp/init-agentic.el' lives in the Emacs config, not in ekg, so these tests find
+;;; it by path and skip themselves when the fork is checked out on its own.
+
+(defconst z/ekg-test--agentic-file
+  (expand-file-name "../../../lisp/init-agentic.el"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Path to init-agentic.el in the surrounding Emacs config.")
+
+(defun z/ekg-test--load-agentic ()
+  "Load init-agentic.el, or skip the test when it is not there."
+  (unless (file-exists-p z/ekg-test--agentic-file)
+    (ert-skip "init-agentic.el is not next to this checkout"))
+  (unless (fboundp 'z/agent--resolve-repo)
+    (load z/ekg-test--agentic-file nil t)))
+
+(ert-deftest z/agent--resolve-repo--prefers-dir ()
+  "A DIR property that exists wins over everything else."
+  (z/ekg-test--load-agentic)
+  (let* ((dir (make-temp-file "z-agent-dir" t))
+         (context (list :dir dir :repo-name "ignored")))
+    (should (equal (z/agent--resolve-repo context) dir))
+    (should (equal (plist-get context :base-repo) dir))
+    (delete-directory dir t)))
+
+(ert-deftest z/agent--resolve-repo--falls-back-to-project-tag ()
+  "Without a usable DIR, a project/<repo> tag resolves under the worktree root."
+  (z/ekg-test--load-agentic)
+  (let* ((context (list :dir "/nonexistent/z-agent" :repo-name "some-repo"))
+         (path (z/agent--resolve-repo context)))
+    (should (equal path (expand-file-name "some-repo"
+                                          (expand-file-name z/agent-worktree-root))))
+    (should (equal (plist-get context :base-repo) path))))
+
+(ert-deftest z/agent--resolve-repo--asks-when-both-missing ()
+  "With neither DIR nor a tag it asks, and the answer still lands under the root."
+  (z/ekg-test--load-agentic)
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (&rest _) "chosen-repo")))
+    (let* ((context (list))
+           (path (z/agent--resolve-repo context)))
+      (should (equal path (expand-file-name "chosen-repo"
+                                            (expand-file-name z/agent-worktree-root)))))))
+
 ;;; Two upstream tests assert the display behaviour this fork deliberately changes:
 ;;; `ekg-test-display-note-template' expects the original template (we put the tags
 ;;; first, right-align the time and drop the "-->" marker) and
