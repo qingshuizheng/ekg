@@ -494,6 +494,29 @@ Called from an idle timer; does nothing when no such buffer is open."
                   (buffer-list))
     (z/ekg-notes-refresh-edit-buffers)))
 
+(defvar z/ekg-embedding--tag-refresh-log nil
+  "List of (TAG . MILLISECONDS) recorded by `z/ekg-embedding--log-tag-refresh'.
+Cleared with \='(setq z/ekg-embedding--tag-refresh-log nil).")
+
+(defun z/ekg-embedding--log-tag-refresh (orig tag &rest args)
+  "Call ORIG on TAG, recording how long it takes.
+`ekg-embedding-refresh-tag-embedding' recomputes a tag's vector from every note
+carrying that tag and writes it back, which means a synchronous HTTP call per tag
+plus an SQLite write that fires the FTS triggers.  When a save looked hung, this log
+is what says whether it was one slow tag or many ordinary ones."
+  (let ((t0 (float-time)))
+    (prog1 (apply orig tag args)
+      (let ((ms (round (* 1000 (- (float-time) t0)))))
+        (push (cons tag ms) z/ekg-embedding--tag-refresh-log)
+        (when (> ms 200)
+          (message "ekg-embedding: tag %S took %dms (累计 %d 个)"
+                   tag ms (length z/ekg-embedding--tag-refresh-log)))))))
+
+(unless (advice-member-p #'z/ekg-embedding--log-tag-refresh
+                         'ekg-embedding-refresh-tag-embedding)
+  (advice-add 'ekg-embedding-refresh-tag-embedding
+              :around #'z/ekg-embedding--log-tag-refresh))
+
 (defun z/ekg-notes-refresh-edit-buffers (&optional ids)
   "Make ekg edit/capture buffers agree with the database.
 IDS, when non-nil, restricts this to those note ids.  A buffer with unsaved edits is
@@ -548,6 +571,52 @@ that tag's shape (see `ekg-org-change-state' and `ekg-org-task-state')."
   (require 'ekg-org)
   (concat ekg-org-state-tag-prefix (downcase state)))
 
+;;; Keeping `org/task' in step with `org/state/*'
+
+;; The `ot' view only shows notes carrying `org/task', so a note whose state was set by
+;; hand (adding `org/state/todo' yourself, or through any API) would be a task the task
+;; view cannot see.
+;;
+;; Two mechanisms can keep the two tags in step.  This file uses the hook:
+;;
+;;   1. `ekg-note-add-tag-hook' (used here) is plain Lisp in the config: testable, its
+;;      errors have a readable backtrace, and editing a note cannot change its behaviour.
+;;
+;;   2. `ekg-function-tag' (`tag-defun', see `ekg-maybe-function-tag') is the data-driven
+;;      mechanism: a note tagged `org/state' *and* `tag-defun' has its body evaluated on
+;;      every add of a tag in that hierarchy, so the rule lives in the database and
+;;      travels with it.  Not used here, because the body is editable text (one stray
+;;      character silently disables the rule), errors surface inside `eval', and every
+;;      tag add pays an `ekg-get-notes-with-tags' query.
+
+(defun z/ekg-note--auto-task-tag (tag)
+  "Make the note a task when an `org/state/...' TAG is added to it.
+Adding the task tag itself does not recurse, because it does not start with the state
+prefix."
+  (when (and (boundp 'ekg-org-state-tag-prefix)
+             (string-prefix-p ekg-org-state-tag-prefix tag))
+    (let ((note (ignore-errors (z/ekg-note--current-note))))
+      (when (and note (not (member ekg-org-task-tag (ekg-note-tags note))))
+        (setf (ekg-note-tags note) (cons ekg-org-task-tag (ekg-note-tags note)))
+        (message "已补上 org/task（ot 视图靠它筛任务）")))))
+
+(add-hook 'ekg-note-add-tag-hook #'z/ekg-note--auto-task-tag)
+
+(defun z/ekg-org-backfill-task-tags ()
+  "Give `org/task' to every note that has an `org/state/...' tag but no task tag.
+The hook only helps notes whose state is set from now on; this fixes the history."
+  (interactive)
+  (require 'ekg-org)
+  (let ((fixed 0))
+    (dolist (tag (seq-filter (lambda (tg) (string-prefix-p ekg-org-state-tag-prefix tg))
+                             (z/ekg-tags)))
+      (dolist (note (ekg-get-notes-with-tag tag))
+        (unless (member ekg-org-task-tag (ekg-note-tags note))
+          (setf (ekg-note-tags note) (cons ekg-org-task-tag (ekg-note-tags note)))
+          (ekg-save-note note)
+          (setq fixed (1+ fixed)))))
+    (message "补了 %d 条笔记的 org/task" fixed)))
+
 (defun z/ekg-note--prop-op (kw &optional val)
   "Edit property KW on the current note, optionally setting to VAL."
   (let* ((note (z/ekg-note--pick-note))
@@ -596,7 +665,7 @@ not a notes view at all), say so instead of running `ekg-note-tags' on nil."
                     (let ((crm-separator "[,，]"))
                       (seq-uniq
                        (completing-read-multiple
-                        "Edit tags: \n"
+                        "Edit tags: "
                         (z/ekg-tags) nil nil
                         (when old (concat (mapconcat #'identity old ", ") ", "))
                         'ekg-tag-history))))))
