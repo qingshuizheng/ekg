@@ -48,6 +48,8 @@
 ;;                                   archives the file once every note in it
 ;;                                   is migrated)
 ;;   M-x ekg-vulpea-open-file      open the vulpea source of the current note
+;;   M-x ekg-vulpea-discard        drop a note from ekg (backlinks shown on
+;;                                   request); `ekg-vulpea-undiscard' undoes it
 ;;
 ;; Saving a vulpea file re-indexes that file three seconds later
 ;; (`ekg-vulpea-autosync').  Changes made elsewhere -- another Dropbox
@@ -717,39 +719,68 @@ index is consulted; links written in ekg-native notes are not scanned."
       (when (ignore-errors (vulpea-db-get-by-id id))
         (ignore-errors (vulpea-db-query-by-links-some (list id)))))))
 
-(defun ekg-vulpea--backlink-summary (notes)
-  "Return a short list of NOTES' titles for a prompt."
-  (let ((titles (mapcar (lambda (note)
-                          (or (vulpea-note-title note) "untitled"))
-                        (seq-take notes 3))))
-    (concat (mapconcat #'identity titles ", ")
-            (if (> (length notes) 3)
-                (format " and %d more" (- (length notes) 3))
-              ""))))
+(defun ekg-vulpea--show-backlinks (backlinks)
+  "Show BACKLINKS in an ekg notes buffer.
+Uses a separate window when the frame allows it, so the discard
+prompt stays usable."
+  (let* ((notes (delq nil
+                      (mapcar (lambda (note)
+                                (ekg-get-note-with-id (vulpea-note-id note)))
+                              backlinks)))
+         (buffer (get-buffer-create "*ekg vulpea backlinks*")))
+    (if (null notes)
+        (message "ekg-vulpea: none of the %d backlink(s) has an ekg note"
+                 (length backlinks))
+      (with-current-buffer buffer
+        (ekg--show-notes "vulpea backlinks" (lambda () notes) nil))
+      (display-buffer buffer '(display-buffer-pop-up-window))
+      (message "ekg-vulpea: showing %d backlink note(s); answer the discard prompt when done"
+               (length notes)))))
+
+(defun ekg-vulpea--discard-answer (title backlinks)
+  "Ask whether to discard TITLE, offering to show BACKLINKS.
+Returns the long answer: \"yes\", \"no\", or \"show\"."
+  (read-answer
+   (format "Discard %s from ekg? The vulpea file stays.%s "
+           title
+           (if backlinks
+               (format " %d note(s) link to it." (length backlinks))
+             ""))
+   (if backlinks
+       '(("yes" ?y "discard it")
+         ("no" ?n "keep it")
+         ("show" ?s "show the linking notes"))
+     '(("yes" ?y "discard it")
+       ("no" ?n "keep it")))))
 
 ;;;###autoload
 (defun ekg-vulpea-discard (&optional arg)
   "Remove the note at point from ekg and never mirror it again.
 The vulpea file is left untouched, so `ekg-vulpea-undiscard' can bring
 the note back.  Before asking, vulpea's backlinks to the note are
-collected and shown; a note that is still referenced deserves a second
-look.  With a prefix argument, skip both the confirmation and the
-backlink check."
+collected; when there are any, the prompt offers to show them in an
+ekg notes buffer before deciding.  With a prefix argument, skip both
+the confirmation and the backlink check."
   (interactive "P")
   (ekg-vulpea--ensure-schema)
   (let* ((note (ekg-current-note-or-error-expanded))
          (id (ekg-note-id note))
-         (title (car (plist-get (ekg-note-properties note) :titled/title)))
-         (backlinks (unless arg (ekg-vulpea--backlinks note))))
-    (when (or arg
-              (y-or-n-p
-               (format "Discard %s from ekg? The vulpea file stays.%s "
-                       (or title (format "%s" id))
-                       (if backlinks
-                           (format " %d note(s) link to it: %s."
-                                   (length backlinks)
-                                   (ekg-vulpea--backlink-summary backlinks))
-                         ""))))
+         (title (or (car (plist-get (ekg-note-properties note)
+                                    :titled/title))
+                    (format "%s" id)))
+         (backlinks (unless arg (ekg-vulpea--backlinks note)))
+         (discard nil)
+         (done nil))
+    (while (not done)
+      (let ((answer (if arg "yes" (ekg-vulpea--discard-answer title backlinks))))
+        (cond
+         ((equal answer "show")
+          (ekg-vulpea--show-backlinks backlinks))
+         ((equal answer "yes")
+          (setq discard t done t))
+         (t
+          (setq done t)))))
+    (when discard
       (ekg-vulpea--set-discarded-ids
        (cons id (delete id (ekg-vulpea--discarded-ids))))
       (ekg-note-delete-by-id id)
