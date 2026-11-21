@@ -2329,6 +2329,35 @@ executing a write if there is a problem."
 (declare-function emacsql "ext:emacsql.el")
 (declare-function sqlite-execute "ext:sqlite.c")
 
+(defun ekg--sql-substitute (sql params)
+  "Return SQL with each `?' replaced by the next value in PARAMS.
+Values are printed with `prin1', which is how `emacsql-format' writes them into
+the statement, so a string ends up stored with its quotes and a symbol without.
+Using `triples-standardize-val' here would add a second layer of quotes and the
+statement would match nothing."
+  (let ((rest params))
+    (replace-regexp-in-string
+     "?"
+     (lambda (_match)
+       (unless rest
+         (error "Not enough parameters for SQL: %s" sql))
+       (concat "'" (replace-regexp-in-string
+                    "'" "''" (prin1-to-string (pop rest)))
+               "'"))
+     sql t t)))
+
+(defun ekg--sql-execute (sql &optional params)
+  "Execute SQL against `ekg-db', substituting PARAMS for the `?' placeholders.
+The single exit for the few places in ekg that write SQL by hand.  The builtin
+interface gets real bound parameters, standardized the way it stores them; the
+emacsql and pg interfaces get the statement with the values inlined, printed the
+way `emacsql-format' prints them, which is what those interfaces do anyway.  Any
+`%' is doubled because `emacsql-format' runs the statement through `format'."
+  (if (eq triples-database-interface 'builtin)
+      (sqlite-execute ekg-db sql (mapcar #'triples-standardize-val params))
+    (emacsql ekg-db (replace-regexp-in-string "%" "%%"
+                                              (ekg--sql-substitute sql params)))))
+
 (defun ekg-global-rename-tag (from-tag to-tag)
   "Rename FROM-TAG to TO-TAG.
 This can be done whether TO-TAG already exists or not.  This
@@ -2340,15 +2369,9 @@ FROM-TAG will use TO-TAG."
   (triples-with-transaction
     ekg-db
     (let ((old-tag-ids (plist-get (triples-get-type ekg-db from-tag 'tag) :tagged)))
-      (pcase triples-sqlite-interface
-        ('builtin (if (fboundp 'sqlite-execute)
-                      (sqlite-execute
-                       ekg-db
-                       "UPDATE triples SET object = ? WHERE object = ? AND predicate = 'tagged/tag'"
-                       (list (triples-standardize-val to-tag) (triples-standardize-val from-tag)))
-                    (error "The triples library incorrectly configured to use sqlite in 29.1, which is not available")))
-        ('emacsql (emacsql ekg-db [:update triples :set (= object $s1) :where (= object $s2) :and (= predicate 'tagged/tag)]
-                           to-tag from-tag)))
+      (ekg--sql-execute
+       "UPDATE triples SET object = ? WHERE object = ? AND predicate = 'tagged/tag'"
+       (list to-tag from-tag))
       (triples-remove-type ekg-db from-tag 'tag)
       (triples-set-type ekg-db to-tag 'tag)
       (mapc #'ekg-fix-renamed-dup-tags old-tag-ids)))

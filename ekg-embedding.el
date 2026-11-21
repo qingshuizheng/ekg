@@ -103,8 +103,10 @@ switch from the native sqlite to a vecdb provider."
   (triples-remove-schema-type ekg-db 'embedding)
   ;; Now that the embeddings are removed, we should compact the database, which
   ;; can happen in the builtin sqlite.
-  (when (and (eq triples-sqlite-interface 'builtin) (fboundp 'sqlite-execute))
-    (sqlite-execute ekg-db "VACUUM")))
+  ;; `VACUUM' exists in both SQLite and PostgreSQL, and has to run outside a
+  ;; transaction, so it goes through the same single exit as the other hand-written
+  ;; statements in ekg.
+  (ekg--sql-execute "VACUUM"))
 
 (defun ekg-embedding-average (embeddings)
   "Compute the average of all of EMBEDDINGS, a list.

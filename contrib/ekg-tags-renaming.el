@@ -379,17 +379,9 @@ buffer preview (supports marking individual tags and dry-run)."
               (triples-with-transaction
                 ekg-db
                 (let ((old-tag-ids (plist-get (triples-get-type ekg-db from-subtag 'tag) :tagged)))
-                  (pcase triples-sqlite-interface
-                    ('builtin (sqlite-execute
-                               ekg-db
-                               "UPDATE triples SET object = ? WHERE object = ? AND predicate = 'tagged/tag'"
-                               (list (triples-standardize-val to-subtag)
-                                     (triples-standardize-val from-subtag))))
-                    ('emacsql (emacsql ekg-db [ :update triples
-                                                :set (= object $s1)
-                                                :where (= object $s2)
-                                                :and (= predicate 'tagged/tag)]
-                                       to-subtag from-subtag)))
+                  (ekg--sql-execute
+                   "UPDATE triples SET object = ? WHERE object = ? AND predicate = 'tagged/tag'"
+                   (list to-subtag from-subtag))
                   (triples-remove-type ekg-db from-subtag 'tag)
                   (triples-set-type ekg-db to-subtag 'tag)
                   (mapc #'ekg-fix-renamed-dup-tags old-tag-ids)
@@ -560,16 +552,9 @@ FROM-TAG will use TO-TAG."
             (triples-with-transaction
               ekg-db
               (let ((old-tag-ids (plist-get (triples-get-type ekg-db from-subtag 'tag) :tagged)))
-                (pcase triples-sqlite-interface
-                  ('builtin (sqlite-execute
-                             ekg-db
-                             "UPDATE triples SET object = ? WHERE object = ? AND predicate = 'tagged/tag'"
-                             (list (triples-standardize-val to-subtag) (triples-standardize-val from-subtag))))
-                  ('emacsql (emacsql ekg-db [ :update triples
-                                              :set (= object $s1)
-                                              :where (= object $s2)
-                                              :and (= predicate 'tagged/tag)]
-                                     to-subtag from-subtag)))
+                (ekg--sql-execute
+                 "UPDATE triples SET object = ? WHERE object = ? AND predicate = 'tagged/tag'"
+                 (list to-subtag from-subtag))
                 (triples-remove-type ekg-db from-subtag 'tag)
                 (triples-set-type ekg-db to-subtag 'tag)
                 (mapc #'ekg-fix-renamed-dup-tags old-tag-ids)

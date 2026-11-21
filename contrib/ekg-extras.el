@@ -309,29 +309,15 @@ Excludes trashed notes. Uses active region if present."
                (trash-tag (or (bound-and-true-p ekg-trash-tag) "trash"))
                (raw-ids
                 (flatten-list
-                 (pcase triples-sqlite-interface
-                   ('builtin
-                    (sqlite-execute
-                     ekg-db
-                     "SELECT DISTINCT subject FROM triples
+                 (ekg--sql-execute
+                  "SELECT DISTINCT subject FROM triples
 WHERE instr(object, ?) > 0
   AND predicate IN ('text/text', 'titled/title', 'tagged/tag', 'reffed/ref')
   AND subject NOT IN (
     SELECT DISTINCT subject FROM triples
     WHERE predicate = 'tagged/tag' AND object = ?
   )"
-                     (list query-input trash-tag)))
-                   ('emacsql
-                    (emacsql ekg-db
-                             [:select [distinct subject] :from triples
-                                      :where (and (> (instr object $s1) 0)
-                                                  (in predicate [text/text titled/title tagged/tag reffed/ref])
-                                                  (not (in subject
-                                                           [:select [distinct subject] :from triples
-                                                                    :where (and (= predicate tagged/tag)
-                                                                                (= object $s2))])))]
-                             query-input trash-tag))
-                   (_ (user-error "不支持的 triples 后端: %s" triples-sqlite-interface)))))
+                  (list query-input trash-tag))))
                (ids (mapcar (lambda (id)
                               (cond ((stringp id) (intern id))
                                     ((symbolp id) id)
