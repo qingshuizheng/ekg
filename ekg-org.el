@@ -640,25 +640,37 @@ If ARCHIVE is non-nil, return archived tasks instead."
   (triples-db-insert ekg-db id 'org/sort-order order))
 
 (defun ekg-org-view--assign-order-after (siblings current-id)
-  "Return a sort-order value that places a new item after CURRENT-ID in SIBLINGS.
-Also renumbers all SIBLINGS with gaps to ensure consistent spacing.
-Updates sort-order directly via triples to avoid triggering full
-note save hooks (embedding generation, view refreshes) for each
-sibling."
-  (let ((order 0)
-        (insert-after nil)
-        (found nil))
-    (triples-with-transaction
-      ekg-db
-      (dolist (sib siblings)
-        (when (and found (not insert-after))
-          (setq insert-after order)
-          (cl-incf order))
-        (ekg-org-view--set-sort-order (ekg-note-id sib) order)
-        (when (equal (ekg-note-id sib) current-id)
-          (setq found t))
-        (cl-incf order)))
-    (or insert-after order)))
+  "Return a sort-order that places an item after CURRENT-ID in SIBLINGS.
+SIBLINGS is in display order.  With `ekg-org-view-sort-newest-first',
+values are assigned descending so the displayed order is preserved;
+otherwise they are assigned ascending (the legacy behaviour).
+Renumbers SIBLINGS with gaps via triples, avoiding full save hooks."
+  (let ((n (length siblings)))
+    (if ekg-org-view-sort-newest-first
+        (let ((current-value nil))
+          (triples-with-transaction
+            ekg-db
+            (cl-loop for sib in siblings
+                     for i from 0
+                     for value = (- (* 2 n) (* 2 i))
+                     do (ekg-org-view--set-sort-order (ekg-note-id sib) value)
+                     when (equal (ekg-note-id sib) current-id)
+                     do (setq current-value value)))
+          (if current-value (1- current-value) 0))
+      (let ((order 0)
+            (insert-after nil)
+            (found nil))
+        (triples-with-transaction
+          ekg-db
+          (dolist (sib siblings)
+            (when (and found (not insert-after))
+              (setq insert-after order)
+              (cl-incf order))
+            (ekg-org-view--set-sort-order (ekg-note-id sib) order)
+            (when (equal (ekg-note-id sib) current-id)
+              (setq found t))
+            (cl-incf order)))
+        (or insert-after order)))))
 
 (defun ekg-org-task-state (note)
   "Return NOTE's TODO keyword, or nil if it has no task state."
@@ -1334,7 +1346,17 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
                              (setq prev sib)))))
       (when prev-sibling
         (let ((ekg-org--inhibit-view-refresh t))
-          (ekg-note-set-parent note (ekg-note-id prev-sibling))
+          (triples-with-transaction
+            ekg-db
+            (ekg-note-set-parent note (ekg-note-id prev-sibling))
+            (let* ((children (seq-remove
+                              (lambda (n) (equal (ekg-note-id n) id))
+                              (ekg-org-view--sorted-children (ekg-note-id prev-sibling))))
+                   (last-id (when children (ekg-note-id (car (last children)))))
+                   (order (if children
+                              (ekg-org-view--assign-order-after children last-id)
+                            0)))
+              (ekg-org-view--set-sort-order id order)))
           (ekg-save-note note))
         (ekg-org-view--refresh id)))))
 
