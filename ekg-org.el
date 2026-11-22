@@ -48,6 +48,31 @@ Bind this around batch operations that save multiple notes; call
 (defconst ekg-org-task-tag "org/task"
   "Tag used to identify EKG notes that should be treated as Org tasks.")
 
+(defun ekg-org--ensure-task-tags (note)
+  "Ensure planning or state tags imply a task.
+If NOTE has :org/scheduled, :org/deadline, or an org/scheduled /
+org/deadline tag, add `org/task' and, when it has no state, `org/state/todo'.
+If NOTE has any `org/state/*' tag, add `org/task' as well."
+  (let* ((props (ekg-note-properties note))
+         (tags (ekg-note-tags note))
+         (state (seq-find (lambda (tag)
+                            (string-prefix-p "org/state/" tag))
+                          tags))
+         (scheduled (plist-get props :org/scheduled))
+         (deadline (plist-get props :org/deadline))
+         (planning (or (and (numberp scheduled) (> scheduled 0))
+                       (and (numberp deadline) (> deadline 0))
+                       (member "org/scheduled" tags)
+                       (member "org/deadline" tags))))
+    (when (or state planning)
+      (unless (member ekg-org-task-tag tags)
+        (setq tags (cons ekg-org-task-tag tags)))
+      (when (and planning (not state))
+        (setq tags (cons "org/state/todo" tags)))
+      (setf (ekg-note-tags note) (delete-dups tags)))))
+
+(add-hook 'ekg-note-pre-save-hook #'ekg-org--ensure-task-tags)
+
 (add-to-list 'ekg-hidden-tags ekg-org-task-tag)
 
 (defconst ekg-org-archive-tag "org/archive"
