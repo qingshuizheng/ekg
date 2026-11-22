@@ -85,6 +85,9 @@
 to either t (edited) or `deleted'.")
 
 (defvar egk-mobile-sync--busy nil)
+(defvar egk-mobile-sync--pulled nil
+  "Non-nil when the last pull applied at least one remote change.")
+
 (defvar egk-mobile-sync--applying nil
   "Bound to t while a remote change is written, so hooks stay quiet.")
 (defvar egk-mobile-sync--timer nil)
@@ -434,7 +437,9 @@ numbers, so everything is normalised before it is stored or sent."
             (unless (or (gethash id (egk-mobile-sync--dirty-table))
                         (equal known rev))
               (condition-case apply-err
-                  (egk-mobile-sync--apply-note note)
+                  (progn
+                    (egk-mobile-sync--apply-note note)
+                    (setq egk-mobile-sync--pulled t))
                 (error
                  (egk-mobile-sync--log "apply %s failed: %s" id
                                        (error-message-string apply-err)))))))
@@ -459,9 +464,23 @@ numbers, so everything is normalised before it is stored or sent."
                           (format "%S" err)))
   (egk-mobile-sync--finish))
 
+(defun egk-mobile-sync--refresh-views ()
+  "Refresh plain ekg-notes buffers after a pull.
+`ekg-org-view-mode' installs its own save/delete hook; the generic
+notes list does not, so remote changes would stay invisible."
+  (dolist (buf (buffer-list))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when (and (derived-mode-p 'ekg-notes-mode)
+                   (not (derived-mode-p 'ekg-org-view-mode)))
+          (ignore-errors (ekg-notes-refresh)))))))
+
 (defun egk-mobile-sync--finish ()
   (setq egk-mobile-sync--busy nil)
-  (egk-mobile-sync--state-save))
+  (egk-mobile-sync--state-save)
+  (when egk-mobile-sync--pulled
+    (setq egk-mobile-sync--pulled nil)
+    (egk-mobile-sync--refresh-views)))
 
 ;;; Entry points
 
@@ -470,7 +489,8 @@ numbers, so everything is normalised before it is stored or sent."
   "Push local changes, then pull remote ones."
   (interactive)
   (unless egk-mobile-sync--busy
-    (setq egk-mobile-sync--busy t)
+    (setq egk-mobile-sync--busy t
+          egk-mobile-sync--pulled nil)
     (condition-case err
         (progn
           (ekg-connect)
