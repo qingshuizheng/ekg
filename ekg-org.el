@@ -1169,6 +1169,15 @@ trashed, they are permanently deleted."
               (note (ekg-get-note-with-id id)))
     (ekg-respond-to-note note)))
 
+(defun ekg-org-view--detach-note (note)
+  "Remove NOTE from its parent hierarchy without writing a nil triple."
+  (setf (ekg-note-properties note)
+        (ekg--plist-without-key
+         (ekg--plist-without-key (ekg-note-properties note)
+                                 :hierarchy/parent)
+         :org/parent))
+  (triples-remove-type ekg-db (ekg-note-id note) 'hierarchy))
+
 (defun ekg-org-view-promote ()
   "Promote the task at point, making it a sibling of its current parent.
 The promoted task is placed immediately after its former parent
@@ -1191,11 +1200,7 @@ among the new siblings."
       (let ((egk-mobile-sync--busy t))
         (if grandparent-id
             (ekg-note-set-parent note grandparent-id)
-          ;; Detaching: do not store :hierarchy/parent nil; PostgreSQL's
-          ;; triples.object is NOT NULL, so the nil would fail the save.
-          (setf (ekg-note-properties note)
-                (ekg--plist-without-key (ekg-note-properties note)
-                                        :hierarchy/parent)))
+          (ekg-org-view--detach-note note))
         (ekg-org-view--set-sort-order id sort-order)
         (message "promote: saving")
         (ekg-save-note note)
@@ -1256,8 +1261,8 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
            (ekg-org--inhibit-view-refresh t))
       (if target-id
           (ekg-note-set-parent note target-id)
-        ;; Moving to top level: remove parent.
-        (ekg-note-set-parent note nil))
+        ;; Moving to top level: remove parent without a nil triple.
+        (ekg-org-view--detach-note note))
       ;; Place at the end of the new siblings (its own transaction).
       (let* ((new-siblings (if target-id
                                (ekg-org-view--sorted-children target-id)
