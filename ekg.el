@@ -1660,6 +1660,12 @@ STATE is the note's display state."
   "Major mode for showing a list of notes that can be interacted with."
   (setq-local default-directory (ekg--notes-directory)
               line-spacing 0.15)
+  ;; Org's element parser warns when note formatting temporarily enables
+  ;; org-mode inside this VUI buffer; it is harmless but floods *Warnings*.
+  (setq-local warning-suppress-types
+              (cons '(org-element) warning-suppress-types))
+  (setq-local warning-suppress-log-types
+              (cons '(org-element) warning-suppress-log-types))
   ;; Buffer-local resize callbacks receive a window, not a frame.
   (add-hook 'window-size-change-functions #'ekg-notes--size-window nil t)
   (add-hook 'post-command-hook #'ekg--note-highlight nil t)
