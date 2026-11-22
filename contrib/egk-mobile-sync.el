@@ -209,6 +209,16 @@ numbers, so everything is normalised before it is stored or sent."
         ((listp value) (vconcat (seq-filter #'stringp value)))
         (t (vector (format "%s" value)))))
 
+(defun egk-mobile-sync--set-org-time (props key value)
+  "Set KEY to VALUE in PROPS, or remove it when VALUE is 0/nil."
+  (if (and (integerp value) (> value 0))
+      (plist-put props key value)
+    (let (out (rest props))
+      (while rest
+        (let ((k (pop rest)) (v (pop rest)))
+          (unless (eq k key) (push k out) (push v out))))
+      (nreverse out))))
+
 (defun egk-mobile-sync--note-mode-name (note)
   (let ((mode (ekg-note-mode note)))
     (cond ((stringp mode) mode)
@@ -246,6 +256,12 @@ numbers, so everything is normalised before it is stored or sent."
             ("created" . ,(truncate (or (ekg-note-creation-time note) 0)))
             ("modified" . ,(truncate (or (ekg-note-modified-time note)
                                          (egk-mobile-sync--now))))
+            ("scheduled" . ,(or (plist-get (ekg-note-properties note)
+                                            :org/scheduled)
+                                0))
+            ("deadline" . ,(or (plist-get (ekg-note-properties note)
+                                           :org/deadline)
+                               0))
             ("deleted" . :json-false)))))))
 
 ;;; Applying remote notes
@@ -277,8 +293,16 @@ numbers, so everything is normalised before it is stored or sent."
                       :text body
                       :mode mode
                       :tags tags
-                      :properties (append (list :titled/title titles)
-                                          (when refs (list :reffed/ref refs))))))
+                      :properties
+                      (let ((props (list :titled/title titles)))
+                        (when refs (setq props (plist-put props :reffed/ref refs)))
+                        (setq props (egk-mobile-sync--set-org-time
+                                     props :org/scheduled
+                                     (alist-get 'scheduled note)))
+                        (setq props (egk-mobile-sync--set-org-time
+                                     props :org/deadline
+                                     (alist-get 'deadline note)))
+                        props))))
         (setf (ekg-note-creation-time created)
               (or (alist-get 'created note) (egk-mobile-sync--now)))
         (ekg-save-note created)))
@@ -286,10 +310,14 @@ numbers, so everything is normalised before it is stored or sent."
       (setf (ekg-note-text existing) body
             (ekg-note-mode existing) mode
             (ekg-note-tags existing) tags)
-      (setf (ekg-note-properties existing)
-            (plist-put (plist-put (ekg-note-properties existing)
-                                  :titled/title titles)
-                       :reffed/ref refs))
+      (let ((props (ekg-note-properties existing)))
+        (setq props (plist-put props :titled/title titles))
+        (setq props (plist-put props :reffed/ref refs))
+        (setq props (egk-mobile-sync--set-org-time
+                     props :org/scheduled (alist-get 'scheduled note)))
+        (setq props (egk-mobile-sync--set-org-time
+                     props :org/deadline (alist-get 'deadline note)))
+        (setf (ekg-note-properties existing) props))
       (ekg-save-note existing)))
     (puthash id (or (alist-get 'rev note) "") (egk-mobile-sync--revs))
     id))
