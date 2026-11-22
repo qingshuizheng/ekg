@@ -509,7 +509,7 @@ silently lost."
                    (egk-mobile-sync--log
                     "backing up modified edit buffer %s failed: %s"
                     id (error-message-string err)))))
-              (ekg-mobile-sync--replace-edit-buffer note))))))))
+              (egk-mobile-sync--replace-edit-buffer note))))))))
 
 
 (defun egk-mobile-sync--refresh-views ()
