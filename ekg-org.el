@@ -583,25 +583,23 @@ unnecessary."
     (string< (format "%s" a) (format "%s" b))))
 
 (defcustom ekg-org-view-sort-newest-first t
-  "When non-nil, tasks without :org/sort-order sort newest first.
-An explicit :org/sort-order always sorts ascending (manual order)."
+  "When non-nil, sort tasks by `:org/sort-order' descending.
+The sort-order defaults to the creation time, so the newest task is on
+top.  Set to nil for the old ascending order."
   :type 'boolean
   :group 'ekg)
 
 (defun ekg-org-view--sort-predicate (a b)
   "Return non-nil if note A should sort before note B.
-An explicit :org/sort-order is ascending (manual order); notes
-without one follow `ekg-org-view-sort-newest-first'."
-  (let* ((pa (plist-get (ekg-note-properties a) :org/sort-order))
-         (pb (plist-get (ekg-note-properties b) :org/sort-order))
-         (oa (or pa (ekg-note-creation-time a) 0))
-         (ob (or pb (ekg-note-creation-time b) 0))
-         (straight (or pa pb (not ekg-org-view-sort-newest-first))))
-    (if straight
-        (or (< oa ob)
+Compare `:org/sort-order' (creation time when absent) and use the note
+ID as a stable tiebreaker."
+  (let ((oa (ekg-org-view--sort-order a))
+        (ob (ekg-org-view--sort-order b)))
+    (if ekg-org-view-sort-newest-first
+        (or (> oa ob)
             (and (= oa ob)
                  (ekg-org-view--id-less-p (ekg-note-id a) (ekg-note-id b))))
-      (or (> oa ob)
+      (or (< oa ob)
           (and (= oa ob)
                (ekg-org-view--id-less-p (ekg-note-id a) (ekg-note-id b)))))))
 
