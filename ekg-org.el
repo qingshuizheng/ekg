@@ -1177,28 +1177,26 @@ among the new siblings."
   (ekg-org-view--require-task-at-point)
   (when-let* ((id (ekg-org-view--note-at-point))
               (note (ekg-get-note-with-id id))
-              (props (ekg-note-properties note))
               (parent-id (ekg-note-parent-id note)))
     (let* ((parent-note (ekg-get-note-with-id parent-id))
            (grandparent-id (when parent-note
                              (ekg-note-parent-id parent-note)))
-           (ekg-org--inhibit-view-refresh t))
-      (if grandparent-id
-          (ekg-note-set-parent note grandparent-id)
-        ;; Promoting to top-level: remove the parent property and the
-        ;; hierarchy/parent triple.
-        (ekg-note-set-parent note nil))
-      ;; Place right after the former parent among new siblings.  This
-      ;; renumbers siblings in its own transaction; nesting it inside the
-      ;; parent change deadlocks the PostgreSQL transaction.
-      (let* ((new-siblings (if grandparent-id
-                               (ekg-org-view--sorted-children grandparent-id)
-                             (ekg-org-view--sorted-top-level)))
-             (sort-order (ekg-org-view--assign-order-after
-                          new-siblings parent-id)))
-        (ekg-org-view--set-sort-order id sort-order))
-      (ekg-save-note note))
-    (ekg-org-view--refresh id)))
+           ;; Compute the new order before moving, so the task itself is not
+           ;; part of the sibling list that gets renumbered.
+           (new-siblings (if grandparent-id
+                             (ekg-org-view--sorted-children grandparent-id)
+                           (ekg-org-view--sorted-top-level)))
+           (sort-order (ekg-org-view--assign-order-after
+                        new-siblings parent-id)))
+      (let ((egk-mobile-sync--busy t))
+        (if grandparent-id
+            (ekg-note-set-parent note grandparent-id)
+          (ekg-note-set-parent note nil))
+        (ekg-org-view--set-sort-order id sort-order)
+        (message "promote: saving")
+        (ekg-save-note note)
+        (message "promote: saved")))))
+
 
 (defun ekg-org-view--descendant-ids (id)
   "Return a list of all descendant note IDs of ID."
@@ -1323,31 +1321,25 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
   "Demote the task at point, making it a child of the previous sibling."
   (interactive nil ekg-org-view-mode)
   (ekg-org-view--require-task-at-point)
-  (when-let* ((id (ekg-org-view--note-at-point))
-              (note (ekg-get-note-with-id id))
-              (props (ekg-note-properties note)))
-    (let* ((parent-id (ekg-note-parent-id note))
-           (siblings (if parent-id
-                         (ekg-org-view--sorted-children parent-id)
-                       (ekg-org-view--sorted-top-level)))
-           (prev-sibling (let ((prev nil))
-                           (cl-dolist (sib siblings)
-                             (when (equal (ekg-note-id sib) id)
-                               (cl-return prev))
-                             (setq prev sib)))))
-      (when prev-sibling
-        (let ((ekg-org--inhibit-view-refresh t))
-          (ekg-note-set-parent note (ekg-note-id prev-sibling))
-          (let* ((children (seq-remove
-                            (lambda (n) (equal (ekg-note-id n) id))
-                            (ekg-org-view--sorted-children (ekg-note-id prev-sibling))))
-                 (last-id (when children (ekg-note-id (car (last children)))))
-                 (order (if children
-                            (ekg-org-view--assign-order-after children last-id)
-                          0)))
-            (ekg-org-view--set-sort-order id order))
-          (ekg-save-note note))
-        (ekg-org-view--refresh id)))))
+  (let* ((id (ekg-org-view--note-at-point))
+         (note (ekg-get-note-with-id id))
+         (parent-id (ekg-note-parent-id note))
+         (siblings (if parent-id
+                       (ekg-org-view--sorted-children parent-id)
+                     (ekg-org-view--sorted-top-level)))
+         (prev (let ((prev nil))
+                 (cl-dolist (sib siblings)
+                   (when (equal (ekg-note-id sib) id)
+                     (cl-return prev))
+                   (setq prev sib)))))
+    (when prev
+      (let ((egk-mobile-sync--busy t))
+        (ekg-org-view--set-sort-order id 0)
+        (ekg-note-set-parent note (ekg-note-id prev))
+        (message "demote: saving")
+        (ekg-save-note note)
+        (message "demote: saved")))))
+
 
 (defun ekg-org--set-date-property (property prompt)
   "Set PROPERTY to a date chosen by the user with PROMPT.
