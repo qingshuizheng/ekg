@@ -639,12 +639,8 @@ If ARCHIVE is non-nil, return archived tasks instead."
   (triples-db-delete ekg-db id 'org/sort-order)
   (triples-db-insert ekg-db id 'org/sort-order order))
 
-(defun ekg-org-view--assign-order-after (siblings current-id)
-  "Return a sort-order that places an item after CURRENT-ID in SIBLINGS.
-SIBLINGS is in display order.  With `ekg-org-view-sort-newest-first',
-values are assigned descending so the displayed order is preserved;
-otherwise they are assigned ascending (the legacy behaviour).
-Renumbers SIBLINGS with gaps via triples, avoiding full save hooks."
+(defun ekg-org-view--assign-order-after-renumber (siblings current-id)
+  "Renumber SIBLINGS with gaps and return the order after CURRENT-ID."
   (let ((n (length siblings)))
     (if ekg-org-view-sort-newest-first
         (let ((current-value nil))
@@ -655,9 +651,7 @@ Renumbers SIBLINGS with gaps via triples, avoiding full save hooks."
                    when (equal (ekg-note-id sib) current-id)
                    do (setq current-value value))
           (if current-value (1- current-value) 0))
-      (let ((order 0)
-            (insert-after nil)
-            (found nil))
+      (let ((order 0) (insert-after nil) (found nil))
         (dolist (sib siblings)
           (when (and found (not insert-after))
             (setq insert-after order)
@@ -667,6 +661,30 @@ Renumbers SIBLINGS with gaps via triples, avoiding full save hooks."
             (setq found t))
           (cl-incf order))
         (or insert-after order)))))
+
+(defun ekg-org-view--assign-order-after (siblings current-id)
+  "Return a sort-order that places an item after CURRENT-ID in SIBLINGS.
+Uses the gap between CURRENT-ID and its next sibling when possible; only
+renumbers the siblings when the gap is exhausted.  This keeps a move to
+a few SQL statements instead of rewriting the whole list."
+  (let* ((idx (cl-position current-id siblings
+                           :test #'equal :key #'ekg-note-id))
+         (order (and idx (ekg-org-view--sort-order (nth idx siblings))))
+         (next (and idx (nth (1+ idx) siblings)))
+         (next-order (and next (ekg-org-view--sort-order next))))
+    (if (null idx)
+        0
+      (if ekg-org-view-sort-newest-first
+          (if (and next-order (> (- order next-order) 1))
+              (1- order)
+            (if next
+                (ekg-org-view--assign-order-after-renumber siblings current-id)
+              (1- order)))
+        (if (and next-order (> (- next-order order) 1))
+            (1+ order)
+          (if next
+              (ekg-org-view--assign-order-after-renumber siblings current-id)
+            (1+ order)))))))
 
 (defun ekg-org-task-state (note)
   "Return NOTE's TODO keyword, or nil if it has no task state."
@@ -1178,6 +1196,31 @@ trashed, they are permanently deleted."
          :org/parent))
   (triples-remove-type ekg-db (ekg-note-id note) 'hierarchy))
 
+(defun ekg-org-view--save-move (note parent-id sort-order)
+  "Persist only the hierarchy and sort-order changes for NOTE.
+Avoids `ekg-save-note', which rewrites tags, text, inlines and every
+property over a psql round trip."
+  (let* ((id (ekg-note-id note))
+         (now (time-convert (current-time) 'integer))
+         (props (ekg--plist-without-key
+                 (ekg--plist-without-key (ekg-note-properties note)
+                                         :hierarchy/parent)
+                 :org/parent)))
+    (when parent-id
+      (setq props (plist-put props :hierarchy/parent parent-id)))
+    (setq props (plist-put props :org/sort-order sort-order))
+    (setf (ekg-note-properties note) props)
+    (setf (ekg-note-modified-time note) now)
+    (triples-db-delete ekg-db id 'hierarchy/parent)
+    (when parent-id
+      (triples-db-insert ekg-db id 'hierarchy/parent parent-id))
+    (triples-db-delete ekg-db id 'org/sort-order)
+    (triples-db-insert ekg-db id 'org/sort-order sort-order)
+    (triples-set-type ekg-db id 'time-tracked
+                      :creation-time (or (ekg-note-creation-time note) now)
+                      :modified-time now)
+    (run-hook-with-args 'ekg-note-save-hook note)))
+
 (defun ekg-org-view-promote ()
   "Promote the task at point, making it a sibling of its current parent.
 The promoted task is placed immediately after its former parent
@@ -1198,13 +1241,7 @@ among the new siblings."
            (sort-order (ekg-org-view--assign-order-after
                         new-siblings parent-id)))
       (let ((egk-mobile-sync--busy t))
-        (if grandparent-id
-            (ekg-note-set-parent note grandparent-id)
-          (ekg-org-view--detach-note note))
-        (ekg-org-view--set-sort-order id sort-order)
-        (message "promote: saving")
-        (ekg-save-note note)
-        (ekg-org-view--refresh-all)
+        (ekg-org-view--save-move note grandparent-id sort-order)
         (message "promote: saved")))))
 
 
@@ -1344,11 +1381,8 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
                    (setq prev sib)))))
     (when prev
       (let ((egk-mobile-sync--busy t))
-        (ekg-org-view--set-sort-order id 0)
-        (ekg-note-set-parent note (ekg-note-id prev))
-        (message "demote: saving")
-        (ekg-save-note note)
-        (ekg-org-view--refresh-all)
+        (ekg-org-view--save-move note (ekg-note-id prev)
+                                 (- (time-convert (current-time) 'integer)))
         (message "demote: saved")))))
 
 
