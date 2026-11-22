@@ -472,16 +472,56 @@ numbers, so everything is normalised before it is stored or sent."
                           (format "%S" err)))
   (egk-mobile-sync--finish))
 
+(defun egk-mobile-sync--replace-edit-buffer (note)
+  "Replace the current ekg-edit buffer with NOTE, preserving point."
+  (let ((point (point)))
+    (erase-buffer)
+    (insert (ekg-insert-inlines-representation
+             (ekg-note-text note) (ekg-note-inlines note)))
+    (setq-local ekg-note (copy-ekg-note note)
+                ekg-note-orig-note (copy-tree note)
+                ekg-note-orig-id (ekg-note-id note))
+    (goto-char (min point (point-max)))
+    (set-buffer-modified-p nil)))
+
+(defun egk-mobile-sync--refresh-edit-buffers ()
+  "Refresh `ekg-edit-mode' buffers from the database after a pull.
+An open edit buffer is not repopulated by `ekg-edit' when it already has
+content.  If a pull changes the note underneath it, the buffer keeps the old
+body, and ekg's autosave can write that old body back over the remote edit.
+Unmodified buffers are replaced with the remote note.  A modified buffer is
+first saved as a `conflict'-tagged copy, then replaced, so neither side is
+silently lost."
+  (dolist (buf (buffer-list))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when (bound-and-true-p ekg-edit-mode)
+          (let* ((id (ignore-errors
+                       (format "%s" (ekg-note-id ekg-note))))
+                 (note (and id (egk-mobile-sync--find-note id))))
+            (when note
+              (when (buffer-modified-p)
+                (condition-case err
+                    (let ((egk-mobile-sync--applying t))
+                      (ekg-note-update-from-buffer)
+                      (egk-mobile-sync--conflict-copy (copy-ekg-note ekg-note)))
+                  (error
+                   (egk-mobile-sync--log
+                    "backing up modified edit buffer %s failed: %s"
+                    id (error-message-string err)))))
+              (ekg-mobile-sync--replace-edit-buffer note))))))))
+
+
 (defun egk-mobile-sync--refresh-views ()
-  "Refresh plain ekg-notes buffers after a pull.
-`ekg-org-view-mode' installs its own save/delete hook; the generic
-notes list does not, so remote changes would stay invisible."
+  "Refresh open ekg views after a pull.
+Plain notes lists and edit buffers do not refresh themselves."
   (dolist (buf (buffer-list))
     (when (buffer-live-p buf)
       (with-current-buffer buf
         (when (and (derived-mode-p 'ekg-notes-mode)
                    (not (derived-mode-p 'ekg-org-view-mode)))
-          (ignore-errors (ekg-notes-refresh)))))))
+          (ignore-errors (ekg-notes-refresh))))))
+  (egk-mobile-sync--refresh-edit-buffers))
 
 (defun egk-mobile-sync--finish ()
   (setq egk-mobile-sync--busy nil)
