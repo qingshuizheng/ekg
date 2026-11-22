@@ -648,28 +648,24 @@ Renumbers SIBLINGS with gaps via triples, avoiding full save hooks."
   (let ((n (length siblings)))
     (if ekg-org-view-sort-newest-first
         (let ((current-value nil))
-          (triples-with-transaction
-            ekg-db
-            (cl-loop for sib in siblings
-                     for i from 0
-                     for value = (- (* 2 n) (* 2 i))
-                     do (ekg-org-view--set-sort-order (ekg-note-id sib) value)
-                     when (equal (ekg-note-id sib) current-id)
-                     do (setq current-value value)))
+          (cl-loop for sib in siblings
+                   for i from 0
+                   for value = (- (* 2 n) (* 2 i))
+                   do (ekg-org-view--set-sort-order (ekg-note-id sib) value)
+                   when (equal (ekg-note-id sib) current-id)
+                   do (setq current-value value))
           (if current-value (1- current-value) 0))
       (let ((order 0)
             (insert-after nil)
             (found nil))
-        (triples-with-transaction
-          ekg-db
-          (dolist (sib siblings)
-            (when (and found (not insert-after))
-              (setq insert-after order)
-              (cl-incf order))
-            (ekg-org-view--set-sort-order (ekg-note-id sib) order)
-            (when (equal (ekg-note-id sib) current-id)
-              (setq found t))
-            (cl-incf order)))
+        (dolist (sib siblings)
+          (when (and found (not insert-after))
+            (setq insert-after order)
+            (cl-incf order))
+          (ekg-org-view--set-sort-order (ekg-note-id sib) order)
+          (when (equal (ekg-note-id sib) current-id)
+            (setq found t))
+          (cl-incf order))
         (or insert-after order)))))
 
 (defun ekg-org-task-state (note)
@@ -1187,13 +1183,11 @@ among the new siblings."
            (grandparent-id (when parent-note
                              (ekg-note-parent-id parent-note)))
            (ekg-org--inhibit-view-refresh t))
-      (triples-with-transaction
-        ekg-db
-        (if grandparent-id
-            (ekg-note-set-parent note grandparent-id)
-          ;; Promoting to top-level: remove the parent property and the
-          ;; hierarchy/parent triple.
-          (ekg-note-set-parent note nil)))
+      (if grandparent-id
+          (ekg-note-set-parent note grandparent-id)
+        ;; Promoting to top-level: remove the parent property and the
+        ;; hierarchy/parent triple.
+        (ekg-note-set-parent note nil))
       ;; Place right after the former parent among new siblings.  This
       ;; renumbers siblings in its own transaction; nesting it inside the
       ;; parent change deadlocks the PostgreSQL transaction.
@@ -1257,11 +1251,10 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
                        choices nil t))
            (target-id (cdr (assoc selection choices)))
            (ekg-org--inhibit-view-refresh t))
-      (triples-with-transaction ekg-db
-        (if target-id
-            (ekg-note-set-parent note target-id)
-          ;; Moving to top level: remove parent.
-          (ekg-note-set-parent note nil)))
+      (if target-id
+          (ekg-note-set-parent note target-id)
+        ;; Moving to top level: remove parent.
+        (ekg-note-set-parent note nil))
       ;; Place at the end of the new siblings (its own transaction).
       (let* ((new-siblings (if target-id
                                (ekg-org-view--sorted-children target-id)
@@ -1299,10 +1292,8 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
                (order-cur (ekg-org-view--sort-order note))
                (order-prev (ekg-org-view--sort-order prev))
                (ekg-org--inhibit-view-refresh t))
-          (triples-with-transaction
-            ekg-db
-            (ekg-org-view--set-sort-order id order-prev)
-            (ekg-org-view--set-sort-order prev-id order-cur))
+          (ekg-org-view--set-sort-order id order-prev)
+          (ekg-org-view--set-sort-order prev-id order-cur)
           (ekg-org-view--refresh id))))))
 
 (defun ekg-org-view-move-down ()
@@ -1324,10 +1315,8 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
                (order-cur (ekg-org-view--sort-order note))
                (order-next (ekg-org-view--sort-order next))
                (ekg-org--inhibit-view-refresh t))
-          (triples-with-transaction
-            ekg-db
-            (ekg-org-view--set-sort-order id order-next)
-            (ekg-org-view--set-sort-order next-id order-cur))
+          (ekg-org-view--set-sort-order id order-next)
+          (ekg-org-view--set-sort-order next-id order-cur)
           (ekg-org-view--refresh id))))))
 
 (defun ekg-org-view-demote ()
@@ -1348,9 +1337,7 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
                              (setq prev sib)))))
       (when prev-sibling
         (let ((ekg-org--inhibit-view-refresh t))
-          (triples-with-transaction
-            ekg-db
-            (ekg-note-set-parent note (ekg-note-id prev-sibling)))
+          (ekg-note-set-parent note (ekg-note-id prev-sibling))
           (let* ((children (seq-remove
                             (lambda (n) (equal (ekg-note-id n) id))
                             (ekg-org-view--sorted-children (ekg-note-id prev-sibling))))
