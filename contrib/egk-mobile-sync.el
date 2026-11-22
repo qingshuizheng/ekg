@@ -191,12 +191,16 @@ numbers, so everything is normalised before it is stored or sent."
 (defun egk-mobile-sync--uuid ()
   (secure-hash 'sha1 (format "%s-%s-%s" (float-time) (random) (emacs-pid))))
 
-(defun egk-mobile-sync--note-title (note)
-  "Return NOTE's title, tolerating a string or a list in the property."
+(defun egk-mobile-sync--note-titles (note)
+  "Return all of NOTE's titles; ekg allows a list in `:titled/title'."
   (let ((value (plist-get (ekg-note-properties note) :titled/title)))
-    (cond ((stringp value) value)
-          ((listp value) (or (car value) ""))
-          (t ""))))
+    (cond ((stringp value) (list value))
+          ((listp value) (seq-filter #'stringp value))
+          (t nil))))
+
+(defun egk-mobile-sync--note-title (note)
+  "Return NOTE's primary title, tolerating a string or a list."
+  (or (car (egk-mobile-sync--note-titles note)) ""))
 
 (defun egk-mobile-sync--strings (value)
   "Normalise VALUE to a vector of strings for JSON arrays."
@@ -232,6 +236,8 @@ numbers, so everything is normalised before it is stored or sent."
             ("id" . ,id)
             ("base_rev" . ,base)
             ("title" . ,(egk-mobile-sync--note-title note))
+            ("titles" . ,(egk-mobile-sync--strings
+                          (egk-mobile-sync--note-titles note)))
             ("body" . ,(or (ekg-note-text note) ""))
             ("mode" . ,(egk-mobile-sync--note-mode-name note))
             ("tags" . ,(egk-mobile-sync--strings (ekg-note-tags note)))
@@ -249,6 +255,11 @@ numbers, so everything is normalised before it is stored or sent."
   (let* ((id (alist-get 'id note))
          (deleted (eq (alist-get 'deleted note) t))
          (title (or (alist-get 'title note) ""))
+         (titles (let ((value (alist-get 'titles note)))
+                   (cond ((vectorp value) (append value nil))
+                         ((listp value) value)
+                         (t nil))))
+         (titles (if titles titles (if (string-empty-p title) nil (list title))))
          (body (or (alist-get 'body note) ""))
          (mode (intern (or (alist-get 'mode note) "org-mode")))
          (tags (append (alist-get 'tags note) nil))
@@ -266,7 +277,7 @@ numbers, so everything is normalised before it is stored or sent."
                       :text body
                       :mode mode
                       :tags tags
-                      :properties (append (list :titled/title (list title))
+                      :properties (append (list :titled/title titles)
                                           (when refs (list :reffed/ref refs))))))
         (setf (ekg-note-creation-time created)
               (or (alist-get 'created note) (egk-mobile-sync--now)))
@@ -277,7 +288,7 @@ numbers, so everything is normalised before it is stored or sent."
             (ekg-note-tags existing) tags)
       (setf (ekg-note-properties existing)
             (plist-put (plist-put (ekg-note-properties existing)
-                                  :titled/title (list title))
+                                  :titled/title titles)
                        :reffed/ref refs))
       (ekg-save-note existing)))
     (puthash id (or (alist-get 'rev note) "") (egk-mobile-sync--revs))
@@ -286,9 +297,11 @@ numbers, so everything is normalised before it is stored or sent."
 (defun egk-mobile-sync--conflict-copy (note)
   "Save the local version of NOTE as a new `conflict'-tagged note."
   (let* ((title (egk-mobile-sync--note-title note))
+         (titles (or (egk-mobile-sync--note-titles note) (list title)))
          (props (copy-sequence (ekg-note-properties note))))
     (setf (plist-get props :titled/title)
-          (list (format "[冲突] %s" (if (string-empty-p title) "无标题" title))))
+          (cons (format "[冲突] %s" (if (string-empty-p title) "无标题" title))
+                (cdr titles)))
     (let ((copy (ekg-note-create
                  :id (egk-mobile-sync--uuid)
                  :text (or (ekg-note-text note) "")
