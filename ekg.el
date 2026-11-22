@@ -1929,9 +1929,12 @@ displayed.")
 
 (defun ekg-should-show-id-p (id)
   "Return non-nil if the note ID should be shown to the user.
-True when the ID represents a meaningful resource to the user,
-rather than an auto-generated number."
-  (not (numberp id)))
+True when the ID represents a meaningful resource to the user, rather
+than an auto-generated number.  IDs synced from the mobile app are digit
+strings, so treat those like native numeric IDs too."
+  (not (or (numberp id)
+           (and (stringp id)
+                (string-match-p "\\`[0-9]+\\'" id)))))
 
 (defun ekg--org-redisplay-inline-images ()
   "Redisplay Org inline images, suppressing Org parser warnings."
