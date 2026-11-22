@@ -316,9 +316,9 @@ numbers, so everything is normalised before it is stored or sent."
                    props)))))
         (ekg-save-note created)))
      (t
-      (setf (ekg-note-text existing) body
-            (ekg-note-mode existing) mode
-            (ekg-note-tags existing) tags)
+      ;; The struct's (setf ekg-note-*) accessors are not available in this
+      ;; ekg build, so build a fresh note object with the server fields and
+      ;; let `ekg-save-note' replace the stored row.
       (let ((props (ekg-note-properties existing)))
         (setq props (plist-put props :titled/title titles))
         (setq props (plist-put props :reffed/ref refs))
@@ -326,8 +326,16 @@ numbers, so everything is normalised before it is stored or sent."
                      props :org/scheduled (alist-get 'scheduled note)))
         (setq props (egk-mobile-sync--set-org-time
                      props :org/deadline (alist-get 'deadline note)))
-        (setf (ekg-note-properties existing) props))
-      (ekg-save-note existing)))
+        (let ((updated (make-ekg-note
+                        :id (ekg-note-id existing)
+                        :text body
+                        :mode mode
+                        :tags tags
+                        :creation-time (ekg-note-creation-time existing)
+                        :modified-time (egk-mobile-sync--now)
+                        :properties props
+                        :inlines (ekg-note-inlines existing))))
+          (ekg-save-note updated)))))
     (puthash id (or (alist-get 'rev note) "") (egk-mobile-sync--revs))
     id))
 
