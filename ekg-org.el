@@ -582,15 +582,28 @@ unnecessary."
       (< a b)
     (string< (format "%s" a) (format "%s" b))))
 
+(defcustom ekg-org-view-sort-newest-first t
+  "When non-nil, tasks without :org/sort-order sort newest first.
+An explicit :org/sort-order always sorts ascending (manual order)."
+  :type 'boolean
+  :group 'ekg)
+
 (defun ekg-org-view--sort-predicate (a b)
   "Return non-nil if note A should sort before note B.
-Uses sort-order as primary key and note ID as tiebreaker for
-stability."
-  (let ((oa (ekg-org-view--sort-order a))
-        (ob (ekg-org-view--sort-order b)))
-    (or (< oa ob)
-        (and (= oa ob)
-             (ekg-org-view--id-less-p (ekg-note-id a) (ekg-note-id b))))))
+An explicit :org/sort-order is ascending (manual order); notes
+without one follow `ekg-org-view-sort-newest-first'."
+  (let* ((pa (plist-get (ekg-note-properties a) :org/sort-order))
+         (pb (plist-get (ekg-note-properties b) :org/sort-order))
+         (oa (or pa (ekg-note-creation-time a) 0))
+         (ob (or pb (ekg-note-creation-time b) 0))
+         (straight (or pa pb (not ekg-org-view-sort-newest-first))))
+    (if straight
+        (or (< oa ob)
+            (and (= oa ob)
+                 (ekg-org-view--id-less-p (ekg-note-id a) (ekg-note-id b))))
+      (or (> oa ob)
+          (and (= oa ob)
+               (ekg-org-view--id-less-p (ekg-note-id a) (ekg-note-id b)))))))
 
 (defun ekg-org-view--sorted-children (id)
   "Return non-archived task children of ID, sorted by sort-order."
