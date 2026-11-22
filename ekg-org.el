@@ -1199,6 +1199,7 @@ among the new siblings."
         (ekg-org-view--set-sort-order id sort-order)
         (message "promote: saving")
         (ekg-save-note note)
+        (ekg-org-view--refresh-all)
         (message "promote: saved")))))
 
 
@@ -1342,6 +1343,7 @@ of the target.  Selecting \"Top level\" makes it a top-level task."
         (ekg-note-set-parent note (ekg-note-id prev))
         (message "demote: saving")
         (ekg-save-note note)
+        (ekg-org-view--refresh-all)
         (message "demote: saved")))))
 
 
