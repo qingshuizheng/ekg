@@ -1191,7 +1191,11 @@ among the new siblings."
       (let ((egk-mobile-sync--busy t))
         (if grandparent-id
             (ekg-note-set-parent note grandparent-id)
-          (ekg-note-set-parent note nil))
+          ;; Detaching: do not store :hierarchy/parent nil; PostgreSQL's
+          ;; triples.object is NOT NULL, so the nil would fail the save.
+          (setf (ekg-note-properties note)
+                (ekg--plist-without-key (ekg-note-properties note)
+                                        :hierarchy/parent)))
         (ekg-org-view--set-sort-order id sort-order)
         (message "promote: saving")
         (ekg-save-note note)
