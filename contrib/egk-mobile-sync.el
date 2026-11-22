@@ -286,25 +286,31 @@ numbers, so everything is normalised before it is stored or sent."
      (deleted
       (when (and existing
                  (not (member "trash" (ekg-note-tags existing))))
-        (egk-note-trash existing)))
+        (ekg-note-trash existing)))
      ((null existing)
-      (let ((created (ekg-note-create
-                      :id id
-                      :text body
-                      :mode mode
-                      :tags tags
-                      :properties
-                      (let ((props (list :titled/title titles)))
-                        (when refs (setq props (plist-put props :reffed/ref refs)))
-                        (setq props (egk-mobile-sync--set-org-time
-                                     props :org/scheduled
-                                     (alist-get 'scheduled note)))
-                        (setq props (egk-mobile-sync--set-org-time
-                                     props :org/deadline
-                                     (alist-get 'deadline note)))
-                        props))))
-        (setf (ekg-note-creation-time created)
-              (or (alist-get 'created note) (egk-mobile-sync--now)))
+      ;; `ekg-note-create' always stamps creation time with `current-time'.
+      ;; Fake it to the server's created time; the struct's setf accessor is
+      ;; not available in this build.  Save outside the let so modified time
+      ;; is still "now".
+      (let* ((created-at (or (alist-get 'created note) (egk-mobile-sync--now)))
+             (created
+              (cl-letf (((symbol-function 'current-time)
+                         (lambda () (seconds-to-time created-at))))
+                (ekg-note-create
+                 :id id
+                 :text body
+                 :mode mode
+                 :tags tags
+                 :properties
+                 (let ((props (list :titled/title titles)))
+                   (when refs (setq props (plist-put props :reffed/ref refs)))
+                   (setq props (egk-mobile-sync--set-org-time
+                                props :org/scheduled
+                                (alist-get 'scheduled note)))
+                   (setq props (egk-mobile-sync--set-org-time
+                                props :org/deadline
+                                (alist-get 'deadline note)))
+                   props)))))
         (ekg-save-note created)))
      (t
       (setf (ekg-note-text existing) body
