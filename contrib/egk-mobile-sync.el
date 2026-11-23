@@ -372,7 +372,7 @@ synced note to the moment it happened to arrive on this machine."
                         :properties props
                         :inlines (ekg-note-inlines existing))))
           (egk-mobile-sync--apply-cron-properties updated note)
-          (ekg-mobile-sync--save-note-at updated (alist-get 'modified note))))))
+          (egk-mobile-sync--save-note-at updated (alist-get 'modified note))))))
     (puthash id (or (alist-get 'rev note) "") (egk-mobile-sync--revs))
     id))
 
