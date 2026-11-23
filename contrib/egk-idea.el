@@ -11,7 +11,7 @@
 ;; promoting one is just `C-c C-t' -- no new state machinery.
 ;;
 ;;   C-c C-i   记一条 idea（一行，不问标题/标签）
-;;   C-c C-t   在 review 视图里把它推到 TODO（或 CANCELLED 丢掉）
+;;   C-c C-t   在 review 视图里把它推到 TODO（或 CXLD 丢掉）
 ;;
 ;; `z/ekg-idea-review' opens the ideas as an ordinary notes view, stamps each one
 ;; with IDEA_REVIEWED, and prints how many there are.  `z/ekg-idea-stale' lists the
@@ -179,7 +179,7 @@ cancels it, which is the same three-way decision every review needs."
     (dolist (note notes)
       (z/ekg-idea--stamp-reviewed note))
     (ekg-show-notes-with-all-tags (z/ekg-idea--query-tags))
-    (message "%d 条 idea 待 review（C-c C-t 决定：TODO / IDEA / CANCELLED）"
+    (message "%d 条 idea 待 review（C-c C-t 决定：TODO / IDEA / CXLD）"
              (length notes))))
 
 (defun z/ekg-idea-stale (&optional days)

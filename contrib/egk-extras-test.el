@@ -92,9 +92,9 @@ One vocabulary (`org-todo-keywords'), one tag shape
     (unwind-protect
         (progn
           (setq-default org-todo-keywords
-                        '((sequence "TODO(t)" "NEXT(n)" "STARTED(s)" "WAITING(w@/!)"
-                                    "STALLED(x@/!)" "|" "DONE(d!)" "CANCELLED(c@)")))
-          (dolist (kw '("TODO" "NEXT" "STARTED" "WAITING" "STALLED" "DONE" "CANCELLED"))
+                        '((sequence "TODO(t)" "NEXT(n)" "STRT(s)" "WAIT(w@/!)"
+                                    "HOLD(h@/!)" "BLKD(b@/!)" "|" "DONE(d!)" "CXLD(c@)")))
+          (dolist (kw '("TODO" "NEXT" "STRT" "WAIT" "HOLD" "BLKD" "DONE" "CXLD"))
             ;; the ot view accepts it…
             (should (member kw (ekg-org--todo-keywords)))
             ;; …and the tag it writes reads back as the same state

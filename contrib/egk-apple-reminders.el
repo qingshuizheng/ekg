@@ -119,7 +119,7 @@ end tell" z/ekg-reminders-list)))
   (seq-some (lambda (tag)
               (and (string-prefix-p ekg-org-state-tag-prefix tag)
                    (member (upcase (substring tag (length ekg-org-state-tag-prefix)))
-                           '("DONE" "CANCELLED" "CANCELED"))))
+                           '("DONE" "CXLD" "CANCELLED" "CANCELED"))))
             (ekg-note-tags note)))
 
 (defun z/ekg-reminders--ekg-tasks ()
