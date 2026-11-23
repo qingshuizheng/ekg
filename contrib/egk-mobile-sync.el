@@ -265,7 +265,31 @@ numbers, so everything is normalised before it is stored or sent."
             ("deadline" . ,(or (plist-get (ekg-note-properties note)
                                            :org/deadline)
                                0))
+            ("repeat_cron" . ,(or (ekg-org-get-property note "REPEAT_CRON") ""))
+            ("repeat_anchor" . ,(or (ekg-org-get-property note "REPEAT_ANCHOR") ""))
+            ("repeat_deadline" . ,(or (ekg-org-get-property note "REPEAT_DEADLINE") ""))
+            ("repeat_deadline_anchor" . ,(or (ekg-org-get-property note "REPEAT_DEADLINE_ANCHOR") ""))
+            ("repeat_day_and" . ,(equal (ekg-org-get-property note "REPEAT_DAY_AND") "t"))
+            ("repeat_filter" . ,(or (ekg-org-get-property note "REPEAT_FILTER") ""))
             ("deleted" . :json-false)))))))
+
+(defun egk-mobile-sync--apply-cron-properties (note alist)
+  "Copy REPEAT_* values from server ALIST onto NOTE."
+  (dolist (pair '(("REPEAT_CRON" . repeat_cron)
+                  ("REPEAT_ANCHOR" . repeat_anchor)
+                  ("REPEAT_DEADLINE" . repeat_deadline)
+                  ("REPEAT_DEADLINE_ANCHOR" . repeat_deadline_anchor)
+                  ("REPEAT_DAY_AND" . repeat_day_and)
+                  ("REPEAT_FILTER" . repeat_filter)))
+    (let* ((key (car pair))
+           (value (alist-get (cdr pair) alist)))
+      (cond
+       ((or (null value) (equal value "") (eq value :json-false))
+        (ekg-org-remove-property note key))
+       ((eq value t) (ekg-org-set-property note key "t"))
+       (t (ekg-org-set-property note key (format "%s" value)))))))
+
+(require 'ekg-org nil t)
 
 ;;; Applying remote notes
 
@@ -314,6 +338,7 @@ numbers, so everything is normalised before it is stored or sent."
                                 props :org/deadline
                                 (alist-get 'deadline note)))
                    props)))))
+        (egk-mobile-sync--apply-cron-properties created note)
         (ekg-save-note created)))
      (t
       ;; The struct's (setf ekg-note-*) accessors are not available in this
@@ -335,6 +360,7 @@ numbers, so everything is normalised before it is stored or sent."
                         :modified-time (egk-mobile-sync--now)
                         :properties props
                         :inlines (ekg-note-inlines existing))))
+          (egk-mobile-sync--apply-cron-properties updated note)
           (ekg-save-note updated)))))
     (puthash id (or (alist-get 'rev note) "") (egk-mobile-sync--revs))
     id))
