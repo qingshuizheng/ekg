@@ -293,6 +293,17 @@ numbers, so everything is normalised before it is stored or sent."
 
 ;;; Applying remote notes
 
+(defun egk-mobile-sync--save-note-at (note modified)
+  "Save NOTE while pretending MODIFIED is the current time.
+
+`ekg-save-note' deliberately stamps modified-time with `current-time'.
+A pull must preserve the server's timestamp instead of rewriting every
+synced note to the moment it happened to arrive on this machine."
+  (let ((epoch (or modified (egk-mobile-sync--now))))
+    (cl-letf (((symbol-function 'current-time)
+               (lambda () (seconds-to-time epoch))))
+      (ekg-save-note note))))
+
 (defun egk-mobile-sync--apply-note (note)
   "Write one note alist from the server into ekg."
   (let* ((id (alist-get 'id note))
@@ -339,7 +350,7 @@ numbers, so everything is normalised before it is stored or sent."
                                 (alist-get 'deadline note)))
                    props)))))
         (egk-mobile-sync--apply-cron-properties created note)
-        (ekg-save-note created)))
+        (egk-mobile-sync--save-note-at created (alist-get 'modified note))))
      (t
       ;; The struct's (setf ekg-note-*) accessors are not available in this
       ;; ekg build, so build a fresh note object with the server fields and
@@ -361,7 +372,7 @@ numbers, so everything is normalised before it is stored or sent."
                         :properties props
                         :inlines (ekg-note-inlines existing))))
           (egk-mobile-sync--apply-cron-properties updated note)
-          (ekg-save-note updated)))))
+          (ekg-mobile-sync--save-note-at updated (alist-get 'modified note))))))
     (puthash id (or (alist-get 'rev note) "") (egk-mobile-sync--revs))
     id))
 
