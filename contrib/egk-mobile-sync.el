@@ -471,29 +471,35 @@ synced note to the moment it happened to arrive on this machine."
              (notes (alist-get 'notes resp))
              (cursor (alist-get 'cursor resp))
              (more (eq (alist-get 'more resp) t)))
-        (dolist (note notes)
-          (let* ((id (egk-mobile-sync--key (alist-get 'id note)))
-                 (known (gethash id (egk-mobile-sync--revs)))
-                 (rev (alist-get 'rev note)))
-            ;; A locally dirty note is pushed first; the server answers with
-            ;; a conflict and both sides survive.  An unchanged note is not
-            ;; rewritten: saving thousands of identical notes would run
-            ;; ekg's backup and hooks for nothing.
-            (unless (or (gethash id (egk-mobile-sync--dirty-table))
-                        (equal known rev))
-              (condition-case apply-err
-                  (progn
-                    (egk-mobile-sync--apply-note note)
-                    (setq egk-mobile-sync--pulled t))
-                (error
-                 (egk-mobile-sync--log "apply %s failed: %s" id
-                                       (error-message-string apply-err)))))))
-        (let ((state (egk-mobile-sync--state-get)))
-          (setf (plist-get state :cursor) cursor))
-        (egk-mobile-sync--state-save)
-        (if more
-            (egk-mobile-sync--pull)
-          (egk-mobile-sync--finish)))
+        (let ((failed nil))
+          (dolist (note notes)
+            (let* ((id (egk-mobile-sync--key (alist-get 'id note)))
+                   (known (gethash id (egk-mobile-sync--revs)))
+                   (rev (alist-get 'rev note)))
+              ;; A locally dirty note is pushed first; the server answers with
+              ;; a conflict and both sides survive.  An unchanged note is not
+              ;; rewritten: saving thousands of identical notes would run
+              ;; ekg's backup and hooks for nothing.
+              (unless (or (gethash id (egk-mobile-sync--dirty-table))
+                          (equal known rev))
+                (condition-case apply-err
+                    (progn
+                      (egk-mobile-sync--apply-note note)
+                      (setq egk-mobile-sync--pulled t))
+                  (error
+                   (setq failed t)
+                   (egk-mobile-sync--log "apply %s failed: %s" id
+                                         (error-message-string apply-err)))))))
+          (if failed
+              ;; Do not advance the cursor over a failed note, otherwise the
+              ;; next pull silently skips its stale content forever.
+              (egk-mobile-sync--finish)
+            (let ((state (egk-mobile-sync--state-get)))
+              (setf (plist-get state :cursor) cursor)
+              (egk-mobile-sync--state-save)
+              (if more
+                  (egk-mobile-sync--pull)
+                (egk-mobile-sync--finish))))))
     (error
      (egk-mobile-sync--fail "pull response" err))))
 
