@@ -91,6 +91,8 @@ to either t (edited) or `deleted'.")
 (defvar egk-mobile-sync--applying nil
   "Bound to t while a remote change is written, so hooks stay quiet.")
 (defvar egk-mobile-sync--timer nil)
+(defvar egk-mobile-sync--watch nil
+  "Pending long-poll request for immediate remote changes.")
 (defvar egk-mobile-sync--debounce nil)
 (defvar egk-mobile-sync--log-buffer "*egk-mobile-sync*")
 
@@ -565,6 +567,28 @@ Plain notes lists and edit buffers do not refresh themselves."
                    (not (derived-mode-p 'ekg-org-view-mode)))
           (ignore-errors (ekg-notes-refresh))))))
   (egk-mobile-sync--refresh-edit-buffers))
+
+(defun egk-mobile-sync--watch ()
+  "Wait for a server change without polling the full sync endpoint."
+  (unless (or egk-mobile-sync--busy egk-mobile-sync--watch
+              (not (egk-mobile-sync--token)))
+    (let ((cursor (egk-mobile-sync--cursor)))
+      (setq egk-mobile-sync--watch
+            (egk-mobile-sync--request
+             'get (format "/v1/sync/wait?since=%d&limit=1&timeout=20" cursor)
+             :then
+             (lambda (body)
+               (setq egk-mobile-sync--watch nil)
+               (let* ((json-object-type 'alist)
+                      (resp (ignore-errors (json-read-from-string body)))
+                      (notes (alist-get 'notes resp)))
+                 (if (and notes (> (length notes) 0))
+                     (egk-mobile-sync-sync)
+                   (egk-mobile-sync--watch))))
+             :else
+             (lambda (_err)
+               (setq egk-mobile-sync--watch nil)
+               (run-with-timer 3 nil #'egk-mobile-sync--watch)))))))
 
 (defun egk-mobile-sync--finish ()
   (setq egk-mobile-sync--busy nil)
